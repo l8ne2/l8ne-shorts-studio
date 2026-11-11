@@ -9,9 +9,9 @@ from database.db import DEFAULT_DB_PATH
 st.title("⚙️ Paramètres")
 
 st.subheader("Clés API (fichier .env)")
-for key in ("GROQ_API_KEY", "PEXELS_API_KEY"):
+for key in ("GROQ_API_KEY", "PIXABAY_API_KEY", "PEXELS_API_KEY"):
     st.write(("✅" if os.getenv(key) else "❌") + f" {key}")
-st.caption("Copie .env.example en .env et renseigne tes clés. Le fichier .env n'est jamais envoyé sur GitHub.")
+st.caption("Il suffit d'une clé parmi Pixabay et Pexels pour les visuels. Copie .env.example en .env et renseigne tes clés. Le fichier .env n'est jamais envoyé sur GitHub.")
 
 st.subheader("Outils")
 ffmpeg = shutil.which("ffmpeg")

@@ -162,3 +162,13 @@ def list_assets(project_id: int, asset_type: str = None, db_path=None) -> list:
         params.append(asset_type)
     with get_connection(db_path) as conn:
         return conn.execute(query + " ORDER BY id", params).fetchall()
+
+
+def replace_assets(project_id: int, asset_type: str, items: list, db_path=None) -> None:
+    """Remplace tous les assets d'un type. items = [(file_path, source), ...] (l'ordre est conservé)."""
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM assets WHERE project_id = ? AND asset_type = ?", (project_id, asset_type))
+        conn.executemany(
+            "INSERT INTO assets (project_id, asset_type, file_path, source) VALUES (?, ?, ?, ?)",
+            [(project_id, asset_type, str(path), source) for path, source in items],
+        )

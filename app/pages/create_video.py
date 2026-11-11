@@ -1,11 +1,17 @@
 import json
+from pathlib import Path
 
 import streamlit as st
 
 from core.script_generator import ScriptGenerationError, check_script, generate_script, target_words
+from core.visual_finder import (
+    VIDEOS_DIR, VisualSearchError, build_credits, credit_line, download_video,
+    plan_queries, search_videos, split_scenes,
+)
 from core.voice_generator import VoiceGenerationError, generate_voice
 from database.db import (
-    create_project, get_project, list_assets, list_channels, replace_asset, set_status, update_script,
+    create_project, get_project, list_assets, list_channels, replace_asset, replace_assets,
+    set_status, update_script,
 )
 
 st.title("✍️ Créer une vidéo")
@@ -93,6 +99,75 @@ if project_id:
                 set_status(project_id, "AUDIO_READY")
                 st.success(f"Voix générée ({result['duration'] or '?'} s). Statut : AUDIO_READY")
 
-    audio_assets = list_assets(project_id, "audio")
+    audio_assets = [a for a in list_assets(project_id, "audio") if Path(a["file_path"]).exists()]
     if audio_assets:
         st.audio(audio_assets[-1]["file_path"])
+
+    st.subheader("4. Visuels (banque de vidéos libres)")
+    if not audio_assets:
+        st.info("Génère d'abord la voix off pour passer aux visuels.")
+    else:
+        scenes_key = f"scenes_{project_id}"
+        if st.button("🔎 Chercher des visuels"):
+            scenes = split_scenes(script)
+            if not scenes:
+                st.error("Le script est vide.")
+            else:
+                try:
+                    with st.spinner("Recherche des visuels..."):
+                        queries, fallback = plan_queries(scenes, project["topic"] or project["title"])
+                        st.session_state[scenes_key] = [
+                            {"text": t, "query": q, "candidates": search_videos(q)}
+                            for t, q in zip(scenes, queries)
+                        ]
+                    if fallback:
+                        st.warning("Requêtes automatiques indisponibles : le sujet a été utilisé comme requête.")
+                except VisualSearchError as exc:
+                    set_status(project_id, project["status"], error=str(exc))
+                    st.error(str(exc))
+
+        found = st.session_state.get(scenes_key)
+        if found:
+            choices = {}
+            for i, scene in enumerate(found):
+                st.markdown(f"**Scène {i + 1}** — {scene['text']}")
+                st.caption(f"Requête : {scene['query']}")
+                cands = scene["candidates"]
+                if not cands:
+                    st.warning("Aucun résultat pour cette scène.")
+                    continue
+                cols = st.columns(len(cands))
+                for j, (col, c) in enumerate(zip(cols, cands)):
+                    if c["preview"]:
+                        col.image(c["preview"], caption=f"Option {j + 1} · {c['duration']} s")
+                    else:
+                        col.write(f"Option {j + 1} · {c['duration']} s (pas d'aperçu)")
+                    if c.get("page_url"):
+                        col.caption(f"[Voir la vidéo]({c['page_url']})")
+                choices[i] = st.radio(
+                    "Choix", range(len(cands)), format_func=lambda j: f"Option {j + 1}",
+                    horizontal=True, key=f"choice_{project_id}_{i}", label_visibility="collapsed",
+                )
+            if st.button("✅ Valider et télécharger les visuels") and choices:
+                try:
+                    with st.spinner("Téléchargement des clips..."):
+                        folder = VIDEOS_DIR / f"project_{project_id}"
+                        items, plan, picked = [], [], []
+                        for i, j in choices.items():
+                            cand = found[i]["candidates"][j]
+                            path = download_video(cand, folder / f"scene_{i + 1}.mp4")
+                            items.append((path, credit_line(cand)))
+                            picked.append(cand)
+                            plan.append({"scene": i + 1, "text": found[i]["text"], "query": found[i]["query"],
+                                         "file": str(path), "duration": cand["duration"],
+                                         "credit": credit_line(cand)})
+                        plan_path = folder / "scenes.json"
+                        plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=1), encoding="utf-8")
+                    replace_assets(project_id, "video_clip", items)
+                    replace_asset(project_id, "scenes", plan_path, source=picked[0].get("provider", "pexels") if picked else "stock")
+                    set_status(project_id, "ASSETS_READY")
+                    st.success("Visuels enregistrés. Statut : ASSETS_READY")
+                    st.text_area("Crédits à coller dans la description YouTube", build_credits(picked), height=100)
+                except VisualSearchError as exc:
+                    set_status(project_id, project["status"], error=str(exc))
+                    st.error(str(exc))
