@@ -1,0 +1,16 @@
+name: "Cinéma & séries"
+niche: "Recommandations, analyses et anecdotes sur les films et séries"
+language: "fr"
+duration: 40
+format: "9:16"
+
+style:
+  tone: "enthousiaste et accessible"
+  narration: "conversationnel"
+  subtitles: "dynamiques"
+
+content:
+  - recommandations
+  - analyses
+  - anecdotes
+  - explications

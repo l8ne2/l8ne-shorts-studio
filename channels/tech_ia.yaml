@@ -1,0 +1,16 @@
+name: "Tech & IA"
+niche: "Technologie et intelligence artificielle"
+language: "fr"
+duration: 45
+format: "9:16"
+
+style:
+  tone: "informatif et dynamique"
+  narration: "documentaire"
+  subtitles: "modernes"
+
+content:
+  - actualites_ia
+  - outils_technologiques
+  - tutoriels
+  - decouvertes

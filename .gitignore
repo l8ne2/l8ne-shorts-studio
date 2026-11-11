@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+database/*.db
+media/audio/*
+media/images/*
+media/videos/*
+output/*/*
+!.gitkeep
+.pytest_cache/

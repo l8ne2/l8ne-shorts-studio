@@ -1,0 +1,17 @@
+name: "Mystères & histoires"
+niche: "Histoires vraies, faits insolites, énigmes"
+language: "fr"
+duration: 50
+format: "9:16"
+
+style:
+  tone: "intrigant et posé"
+  narration: "suspense"
+  subtitles: "marqués"
+
+content:
+  - histoires_vraies
+  - faits_insolites
+  - enigmes
+  - disparitions
+  - evenements_historiques
