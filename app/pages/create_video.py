@@ -2,9 +2,8 @@ import json
 
 import streamlit as st
 
+from core.script_generator import ScriptGenerationError, check_script, generate_script, target_words
 from database.db import create_project, get_project, list_channels, set_status, update_script
-
-WORDS_PER_SECOND = 2.5  # débit approximatif de narration en français
 
 st.title("✍️ Créer une vidéo")
 channels = list_channels()
@@ -29,15 +28,36 @@ project_id = st.session_state.get("project_id")
 if project_id:
     project = get_project(project_id)
     cfg = json.loads(next(c["config"] for c in channels if c["id"] == project["channel_id"]))
-    target_words = int(cfg["duration"] * WORDS_PER_SECOND)
+    key = f"script_{project_id}"
+    if key not in st.session_state:
+        st.session_state[key] = project["script"] or ""
+
+    def on_generate():
+        """Callback : s'exécute avant le rendu, donc peut modifier la zone de texte."""
+        current = get_project(project_id)
+        try:
+            script = generate_script(current["topic"] or current["title"], cfg)
+        except ScriptGenerationError as exc:
+            set_status(project_id, current["status"], error=str(exc))
+            return
+        st.session_state[key] = script
+        update_script(project_id, script)
+        set_status(project_id, current["status"], error=None)
 
     st.subheader(f"2. Script — {project['title']}")
     st.caption(
         f"Chaîne : {project['channel_name']} · Statut : {project['status']} · "
-        f"Durée cible : {cfg['duration']} s (≈ {target_words} mots)"
+        f"Durée cible : {cfg['duration']} s (≈ {target_words(cfg['duration'])} mots)"
     )
-    script = st.text_area("Script", value=project["script"] or "", height=250)
+    if project["error"]:
+        st.error(project["error"])
+
+    st.button("🤖 Générer avec Groq", on_click=on_generate)
+    script = st.text_area("Script (modifiable)", key=key, height=250)
     st.caption(f"{len(script.split())} mots")
+    for w in check_script(script, cfg["duration"]) if script.strip() else []:
+        st.warning(w)
+
     c1, c2 = st.columns(2)
     if c1.button("💾 Enregistrer"):
         update_script(project_id, script)
@@ -49,4 +69,3 @@ if project_id:
             update_script(project_id, script)
             set_status(project_id, "SCRIPT_READY")
             st.success("Statut : SCRIPT_READY")
-    st.info("La génération automatique du script (Groq) arrive en Phase 2.")
