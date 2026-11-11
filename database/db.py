@@ -172,3 +172,18 @@ def replace_assets(project_id: int, asset_type: str, items: list, db_path=None) 
             "INSERT INTO assets (project_id, asset_type, file_path, source) VALUES (?, ?, ?, ?)",
             [(project_id, asset_type, str(path), source) for path, source in items],
         )
+
+
+def add_export(project_id: int, file_path: str, duration: int = None, db_path=None) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "INSERT INTO exports (project_id, file_path, duration, created_at) VALUES (?, ?, ?, ?)",
+            (project_id, str(file_path), duration, _now()),
+        )
+
+
+def list_exports(project_id: int, db_path=None) -> list:
+    with get_connection(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM exports WHERE project_id = ? ORDER BY id DESC", (project_id,)
+        ).fetchall()

@@ -3,6 +3,7 @@ niche: "Recommandations, analyses et anecdotes sur les films et séries"
 language: "fr"
 duration: 40
 format: "9:16"
+framing: "crop"  # crop = plein écran recadré ; blur = vidéo entière sur fond flou
 
 voice:
   name: "fr-FR-DeniseNeural"

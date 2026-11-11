@@ -3,6 +3,7 @@ niche: "Technologie et intelligence artificielle"
 language: "fr"
 duration: 45
 format: "9:16"
+framing: "crop"  # crop = plein écran recadré ; blur = vidéo entière sur fond flou
 
 voice:
   name: "fr-FR-HenriNeural"

@@ -4,13 +4,16 @@ from pathlib import Path
 import streamlit as st
 
 from core.script_generator import ScriptGenerationError, check_script, generate_script, target_words
+from core.pipeline import missing_steps, render_project
+from core.subtitle_generator import SubtitleError, generate_subtitles
 from core.visual_finder import (
     VIDEOS_DIR, VisualSearchError, build_credits, credit_line, download_video,
     plan_queries, search_videos, split_scenes,
 )
+from core.video_editor import FRAMINGS, VideoEditError
 from core.voice_generator import VoiceGenerationError, generate_voice
 from database.db import (
-    create_project, get_project, list_assets, list_channels, replace_asset, replace_assets,
+    create_project, get_project, list_assets, list_channels, list_exports, replace_asset, replace_assets,
     set_status, update_script,
 )
 
@@ -171,3 +174,58 @@ if project_id:
                 except VisualSearchError as exc:
                     set_status(project_id, project["status"], error=str(exc))
                     st.error(str(exc))
+
+    st.subheader("5. Sous-titres")
+    timing_assets = [a for a in list_assets(project_id, "timings") if Path(a["file_path"]).exists()]
+    if not timing_assets:
+        st.info("Les sous-titres sont synchronisés sur la voix : génère d'abord la voix off.")
+    else:
+        style_name = cfg.get("style", {}).get("subtitles", "modernes")
+        st.caption(f"Style de la chaîne : {style_name}. Synchronisés mot par mot sur la voix.")
+        if st.button("💬 Générer les sous-titres"):
+            try:
+                result = generate_subtitles(timing_assets[-1]["file_path"], cfg)
+            except SubtitleError as exc:
+                set_status(project_id, project["status"], error=str(exc))
+                st.error(str(exc))
+            else:
+                replace_asset(project_id, "subtitles_srt", result["srt_path"], source="edge-tts")
+                replace_asset(project_id, "subtitles_ass", result["ass_path"], source="edge-tts")
+                st.success(f"{len(result['cues'])} sous-titres générés.")
+        srt_assets = [a for a in list_assets(project_id, "subtitles_srt") if Path(a["file_path"]).exists()]
+        if srt_assets:
+            srt_text = Path(srt_assets[-1]["file_path"]).read_text(encoding="utf-8")
+            st.text_area("Aperçu (.srt)", srt_text, height=160, disabled=True)
+            st.download_button("⬇️ Télécharger le .srt", srt_text, file_name=f"project_{project_id}.srt")
+
+    st.subheader("6. Montage et export")
+    todo = missing_steps(project_id)
+    if todo:
+        st.info("Avant le montage, termine : " + ", ".join(dict.fromkeys(todo)) + ".")
+    else:
+        default_framing = cfg.get("framing", "crop")
+        framing = st.radio(
+            "Cadrage des vidéos", FRAMINGS, index=FRAMINGS.index(default_framing),
+            format_func=lambda f: "Plein écran recadré (recommandé)" if f == "crop" else "Vidéo entière sur fond flou",
+            horizontal=True,
+        )
+        if st.button("🎬 Monter la vidéo"):
+            try:
+                with st.spinner("Montage en cours (quelques minutes selon ton PC)..."):
+                    result = render_project(project_id, framing=framing)
+            except VideoEditError as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"Vidéo exportée ({result['duration']:.0f} s). Statut : COMPLETED")
+                st.session_state[f"credits_{project_id}"] = result["credits"]
+        exports = [e for e in list_exports(project_id) if Path(e["file_path"]).exists()]
+        if exports:
+            st.video(exports[0]["file_path"])
+            st.caption(f"Fichier : {exports[0]['file_path']}")
+            with open(exports[0]["file_path"], "rb") as f:
+                st.download_button("⬇️ Télécharger le MP4", f, file_name=Path(exports[0]["file_path"]).name,
+                                   mime="video/mp4")
+            if st.session_state.get(f"credits_{project_id}"):
+                st.text_area("Crédits à coller dans la description YouTube",
+                             st.session_state[f"credits_{project_id}"], height=100)
+            st.warning("Vérifie les faits, les droits des médias, la narration et le montage avant de publier.")
