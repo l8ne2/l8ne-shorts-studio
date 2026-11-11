@@ -3,7 +3,10 @@ import os
 import re
 
 WORDS_PER_SECOND = 2.5  # débit approximatif de narration en français
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+# Modèles essayés dans l'ordre. Groq retire ou restreint des modèles régulièrement :
+# si l'un est introuvable (404), on passe au suivant. GROQ_MODEL (dans .env) impose un modèle unique.
+DEFAULT_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"]
+DEFAULT_MODEL = DEFAULT_MODELS[0]
 
 
 class ScriptGenerationError(Exception):
@@ -41,6 +44,32 @@ def clean_script(text: str) -> str:
     return text.strip().strip('"«»').strip()
 
 
+def _is_model_unavailable(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "model_not_found" in text or "does not exist" in text or "decommissioned" in text
+
+
+def call_groq(client, messages: list, max_tokens: int, temperature: float = 0.7, model: str = None) -> str:
+    """Appelle Groq avec repli automatique sur un autre modèle si le premier est indisponible."""
+    forced = model or os.getenv("GROQ_MODEL")
+    models = [forced] if forced else DEFAULT_MODELS
+    last_error = None
+    for name in models:
+        kwargs = {"model": name, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        if name.startswith("openai/gpt-oss"):
+            # modèles à raisonnement : effort faible pour que le budget de tokens serve à la réponse
+            kwargs["extra_body"] = {"reasoning_effort": "low"}
+        try:
+            response = client.chat.completions.create(**kwargs)
+            return response.choices[0].message.content or ""
+        except Exception as exc:
+            last_error = exc
+            if _is_model_unavailable(exc):
+                continue
+            raise
+    raise last_error
+
+
 def generate_script(topic: str, channel_cfg: dict, client=None, model: str = None) -> str:
     """Retourne le script généré. `client` est injectable pour les tests."""
     if not topic.strip():
@@ -52,16 +81,9 @@ def generate_script(topic: str, channel_cfg: dict, client=None, model: str = Non
         from groq import Groq  # import tardif : inutile pour les tests
 
         client = Groq(api_key=api_key)
-    model = model or os.getenv("GROQ_MODEL") or DEFAULT_MODEL
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=build_messages(topic, channel_cfg),
-            temperature=0.7,
-            max_tokens=700,
-        )
-        text = response.choices[0].message.content or ""
-    except Exception as exc:  # erreurs réseau, quota (429), modèle retiré...
+        text = call_groq(client, build_messages(topic, channel_cfg), max_tokens=2500, model=model)
+    except Exception as exc:  # erreurs réseau, quota (429), aucun modèle disponible...
         raise ScriptGenerationError(f"Appel Groq échoué : {exc}") from exc
     script = clean_script(text)
     if not script:

@@ -60,7 +60,7 @@ def plan_queries(scenes: list, topic: str, client=None, model: str = None):
             from groq import Groq
 
             client = Groq(api_key=api_key)
-        from core.script_generator import DEFAULT_MODEL
+        from core.script_generator import call_groq
 
         numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(scenes))
         prompt = (
@@ -69,13 +69,9 @@ def plan_queries(scenes: list, topic: str, client=None, model: str = None):
             f"vidéo d'illustration (stock) concrète et visuelle. Réponds uniquement avec un "
             f"tableau JSON de {len(scenes)} chaînes, sans autre texte."
         )
-        response = client.chat.completions.create(
-            model=model or os.getenv("GROQ_MODEL") or DEFAULT_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=300,
-        )
-        text = re.sub(r"```(?:json)?", "", response.choices[0].message.content or "").strip()
+        content = call_groq(client, [{"role": "user", "content": prompt}], max_tokens=1500,
+                            temperature=0.3, model=model)
+        text = re.sub(r"```(?:json)?", "", content).strip()
         queries = json.loads(text)
         if (
             isinstance(queries, list)
