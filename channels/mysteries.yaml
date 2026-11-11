@@ -4,6 +4,10 @@ language: "fr"
 duration: 50
 format: "9:16"
 
+voice:
+  name: "fr-FR-RemyMultilingualNeural"
+  rate: "-5%"
+
 style:
   tone: "intrigant et posé"
   narration: "suspense"

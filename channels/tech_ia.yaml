@@ -4,6 +4,10 @@ language: "fr"
 duration: 45
 format: "9:16"
 
+voice:
+  name: "fr-FR-HenriNeural"
+  rate: "+0%"
+
 style:
   tone: "informatif et dynamique"
   narration: "documentaire"

@@ -143,3 +143,22 @@ def set_status(project_id: int, status: str, error: str = None, db_path=None) ->
             "UPDATE projects SET status = ?, error = ?, updated_at = ? WHERE id = ?",
             (status, error, _now(), project_id),
         )
+
+
+def replace_asset(project_id: int, asset_type: str, file_path: str, source: str = None, db_path=None) -> None:
+    """Enregistre un asset en remplaçant l'éventuel asset précédent du même type."""
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM assets WHERE project_id = ? AND asset_type = ?", (project_id, asset_type))
+        conn.execute(
+            "INSERT INTO assets (project_id, asset_type, file_path, source) VALUES (?, ?, ?, ?)",
+            (project_id, asset_type, str(file_path), source),
+        )
+
+
+def list_assets(project_id: int, asset_type: str = None, db_path=None) -> list:
+    query, params = "SELECT * FROM assets WHERE project_id = ?", [project_id]
+    if asset_type:
+        query += " AND asset_type = ?"
+        params.append(asset_type)
+    with get_connection(db_path) as conn:
+        return conn.execute(query + " ORDER BY id", params).fetchall()

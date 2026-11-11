@@ -4,6 +4,10 @@ language: "fr"
 duration: 40
 format: "9:16"
 
+voice:
+  name: "fr-FR-DeniseNeural"
+  rate: "+5%"
+
 style:
   tone: "enthousiaste et accessible"
   narration: "conversationnel"

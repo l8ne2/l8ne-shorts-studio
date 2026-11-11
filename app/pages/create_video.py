@@ -3,7 +3,10 @@ import json
 import streamlit as st
 
 from core.script_generator import ScriptGenerationError, check_script, generate_script, target_words
-from database.db import create_project, get_project, list_channels, set_status, update_script
+from core.voice_generator import VoiceGenerationError, generate_voice
+from database.db import (
+    create_project, get_project, list_assets, list_channels, replace_asset, set_status, update_script,
+)
 
 st.title("✍️ Créer une vidéo")
 channels = list_channels()
@@ -69,3 +72,27 @@ if project_id:
             update_script(project_id, script)
             set_status(project_id, "SCRIPT_READY")
             st.success("Statut : SCRIPT_READY")
+
+    st.subheader("3. Voix off")
+    voice_name = cfg.get("voice", {}).get("name", "voix par défaut")
+    st.caption(f"Voix : {voice_name}. Le script enregistré est utilisé pour générer l'audio.")
+    if st.button("🎙️ Générer la voix"):
+        if not script.strip():
+            st.error("Écris ou génère d'abord un script.")
+        else:
+            update_script(project_id, script)
+            try:
+                with st.spinner("Génération de la voix..."):
+                    result = generate_voice(script, cfg, project_id)
+            except VoiceGenerationError as exc:
+                set_status(project_id, project["status"], error=str(exc))
+                st.error(str(exc))
+            else:
+                replace_asset(project_id, "audio", result["audio_path"], source="edge-tts")
+                replace_asset(project_id, "timings", result["words_path"], source="edge-tts")
+                set_status(project_id, "AUDIO_READY")
+                st.success(f"Voix générée ({result['duration'] or '?'} s). Statut : AUDIO_READY")
+
+    audio_assets = list_assets(project_id, "audio")
+    if audio_assets:
+        st.audio(audio_assets[-1]["file_path"])
