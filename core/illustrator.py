@@ -10,10 +10,15 @@ IMAGES_DIR = ROOT / "media" / "images"
 CREDIT = "Illustrations générées par IA (FLUX.1 schnell via Cloudflare Workers AI)"
 
 
-def build_scene_prompt(style_key: str, visual: str, character_description: str = None) -> str:
+def build_scene_prompt(style_key: str, visual: str, character_description: str = None, look_prefix: str = "",
+                       full_scene: bool = False) -> str:
+    """Prompt d'une image de scène. full_scene : le personnage est dessiné dans l'image (au lieu d'être
+    ajouté par l'application sur un décor vide)."""
     style = get_style(style_key)
-    parts = [style["prompt_prefix"], visual, "vertical composition, no text, no watermark"]
-    if style["composition"] in ("sprite", "puppet"):
+    parts = [style["prompt_prefix"], look_prefix, visual, "vertical composition, no text, no watermark"]
+    if full_scene and character_description:
+        parts.append(f"featuring this character in the scene: {character_description}")
+    elif style["composition"] in ("sprite", "puppet"):
         parts.append("empty environment, nobody in the scene, space in the lower center for a character")
     elif character_description:
         parts.append(f"featuring this recurring character: {character_description}")
@@ -34,11 +39,12 @@ def pick_sprite(expressions: dict, emotion: str):
 
 def generate_scene_image(project_id: int, index: int, visual: str, style_key: str,
                          character_description: str = None, out_dir=None, attempt: int = 0,
-                         generator=generate_image) -> Path:
+                         generator=generate_image, look_prefix: str = "", full_scene: bool = False) -> Path:
     """Génère l'image de la scène `index` (0-based) et retourne le chemin de la version 1080x1920."""
     out_dir = Path(out_dir or IMAGES_DIR / f"project_{project_id}")
     seed = stable_seed("scene", project_id, index, attempt)
-    data = generator(build_scene_prompt(style_key, visual, character_description), seed=seed)
+    data = generator(build_scene_prompt(style_key, visual, character_description, look_prefix, full_scene),
+                     seed=seed)
     raw = save_bytes(data, out_dir / f"scene_{index + 1}_raw.jpg")
     return to_vertical(raw, out_dir / f"scene_{index + 1}.jpg")
 

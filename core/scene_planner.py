@@ -6,7 +6,7 @@ from core.styles import EMOTIONS, get_style
 
 
 def _fallback(scenes: list, topic: str) -> list:
-    return [{"visual": topic, "emotion": "neutral", "label": ""} for _ in scenes]
+    return [{"visual": topic, "emotion": "neutral", "label": "", "type": "puppet"} for _ in scenes]
 
 
 def _clean(item: dict) -> dict:
@@ -15,7 +15,9 @@ def _clean(item: dict) -> dict:
     label = str(item.get("label", "") or "").strip()
     if len(label.split()) > 3:
         label = ""
-    return {"visual": visual, "emotion": emotion if emotion in EMOTIONS else "neutral", "label": label}
+    scene_type = str(item.get("type", "puppet")).strip().lower()
+    return {"visual": visual, "emotion": emotion if emotion in EMOTIONS else "neutral", "label": label,
+            "type": scene_type if scene_type in ("puppet", "illustration") else "puppet"}
 
 
 def plan_scenes(scenes: list, topic: str, style_key: str, character_description: str = None,
@@ -48,8 +50,12 @@ def plan_scenes(scenes: list, topic: str, style_key: str, character_description:
             f'- "visual" : une phrase EN ANGLAIS (max 25 mots) décrivant ce qu\'on voit, concrète et '
             f"dessinable, sans texte écrit dans l'image. {sprite_rule}\n"
             f'- "emotion" : une valeur parmi {", ".join(EMOTIONS)} (émotion du personnage pendant la scène)\n'
-            f'- "label" : un mot ou 3 mots maximum en langue "{language}" nommant l\'élément principal '
-            f'montré, ou "" si inutile.\n'
+            f'- "label" : texte court à afficher à l\'écran (3 mots maximum, langue "{language}") : nom de '
+            f'l\'élément montré, mot-clé fort ou chronomètre, ou "" si inutile.\n'
+            + ('- "type" : "puppet" (le personnage dessiné parle devant le décor) ou "illustration" (moment '
+               'dramatique ou émotionnel montré en grand avec le personnage dans la scène ; 1 scène sur 3 '
+               'maximum, jamais la première).\n' if style["composition"] == "puppet" else "")
+            +
             f"Réponds uniquement avec un tableau JSON de {len(scenes)} objets, sans autre texte."
         )
         content = call_groq(client, [{"role": "user", "content": prompt}], max_tokens=3000,

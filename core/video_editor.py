@@ -120,7 +120,7 @@ def probe_duration(path, ffprobe: str = None, runner=subprocess.run):
 
 def assemble_video(clips: list, durations: list, audio_path, ass_path, out_path,
                    framing: str = "crop", ffmpeg: str = None, runner=subprocess.run,
-                   sprites: list = None) -> Path:
+                   sprites: list = None, grade: str = "") -> Path:
     """Monte la vidéo finale. clips et durations : une entrée par scène, dans l'ordre.
 
     Un clip peut être une vidéo (.mp4) ou une image (.jpg/.png, animée par un mouvement de caméra) ;
@@ -166,9 +166,12 @@ def assemble_video(clips: list, durations: list, audio_path, ass_path, out_path,
              runner, cwd=tmp)
         # 3. sous-titres + audio (le .ass est copié dans le dossier de travail : pas de souci de chemin Windows)
         final = base + ["-i", "video_only.mp4", "-i", str(Path(audio_path).resolve())]
+        filters = [grade] if grade else []     # étalonnage d'abord : les sous-titres gardent leurs couleurs
         if ass_path:
             shutil.copyfile(ass_path, tmp / "subs.ass")
-            final += ["-vf", "ass=subs.ass"]
+            filters.append("ass=subs.ass")
+        if filters:
+            final += ["-vf", ",".join(filters)]
         final += ["-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "fast", "-crf", "21",
                   "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
                   "-shortest", str(part)]

@@ -177,3 +177,29 @@ def draw_puppet(design: PuppetDesign, emotion: str = "neutral", mouth: int = 0, 
     ratio = display_height / img.height      # le personnage mesure exactement display_height de haut
     size = (max(1, round(img.width * ratio)), display_height)
     return img.resize(size, Image.LANCZOS)
+
+
+_COLOR_NAMES = {
+    "black": (20, 20, 20), "white": (250, 250, 250), "grey": (128, 128, 128), "red": (200, 40, 40),
+    "orange": (240, 140, 40), "yellow": (240, 210, 60), "green": (60, 160, 70), "olive green": (107, 122, 58),
+    "blue": (50, 100, 200), "navy blue": (30, 40, 90), "purple": (130, 70, 170), "pink": (240, 150, 190),
+    "brown": (110, 70, 40), "dark brown": (70, 45, 30), "tan": (210, 170, 120), "peach": (245, 207, 157),
+}
+
+
+def color_name(hex_color: str) -> str:
+    """Nom anglais approximatif d'une couleur (pour les prompts d'images)."""
+    r, g, b = _rgba(hex_color)[:3]
+    return min(_COLOR_NAMES, key=lambda n: sum((a - c) ** 2 for a, c in zip((r, g, b), _COLOR_NAMES[n])))
+
+
+def describe_design(design: PuppetDesign) -> str:
+    """Description anglaise du personnage, pour le dessiner dans une image générée par IA."""
+    hats = {
+        "none": "no hat", "cap": f"a {color_name(design.hat_color)} cap",
+        "beanie": f"a {color_name(design.hat_color)} beanie", "helmet": f"a {color_name(design.hat_color)} helmet",
+        "hair": f"{color_name(design.hair)} spiky hair",
+    }
+    return (f"a cartoon stickman character with a big perfectly round {color_name(design.skin)} head and thick "
+            f"dark outlines, {hats.get(design.hat, 'no hat')}, wearing a {color_name(design.outfit)} shirt, "
+            "thin black stick arms and legs, simple dot eyes")

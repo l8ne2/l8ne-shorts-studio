@@ -5,7 +5,10 @@ import streamlit as st
 
 from core.script_generator import ScriptGenerationError, check_script, generate_script, target_words
 from app.components.illustrations import render_illustrations
-from core.pipeline import missing_steps, render_project
+from core.pipeline import missing_steps, project_credits, render_project
+from core.publishing_kit import build_kit, checklist, kit_to_text, save_kit
+from core.looks import AUTO, LOOKS
+from core.script_generator import TONES
 from core.styles import STYLES
 from core.subtitle_generator import SubtitleError, generate_subtitles
 from core.visual_finder import (
@@ -37,6 +40,8 @@ with st.form("new_project"):
     channel_name = st.selectbox("Chaîne", list(by_name))
     title = st.text_input("Titre du projet")
     topic = st.text_area("Sujet", height=80)
+    look_key = st.selectbox("Ambiance visuelle", [AUTO, *LOOKS],
+                            format_func=lambda k: "Selon la chaîne" if k == AUTO else LOOKS[k]["label"])
     submitted = st.form_submit_button("Créer le projet")
 if submitted:
     if not title.strip():
@@ -44,7 +49,7 @@ if submitted:
     else:
         st.session_state["project_id"] = create_project(
             by_name[channel_name]["id"], title.strip(), topic.strip(),
-            style=style_key, character_id=character["id"] if character else None,
+            style=style_key, character_id=character["id"] if character else None, look=look_key,
         )
         st.success("Projet créé.")
 
@@ -60,7 +65,8 @@ if project_id:
         """Callback : s'exécute avant le rendu, donc peut modifier la zone de texte."""
         current = get_project(project_id)
         try:
-            script = generate_script(current["topic"] or current["title"], cfg)
+            script = generate_script(current["topic"] or current["title"], cfg,
+                                     tone=st.session_state.get(f"tone_{project_id}"))
         except ScriptGenerationError as exc:
             set_status(project_id, current["status"], error=str(exc))
             return
@@ -76,6 +82,7 @@ if project_id:
     if project["error"]:
         st.error(project["error"])
 
+    st.selectbox("Ton du script", list(TONES), key=f"tone_{project_id}", format_func=lambda k: TONES[k][0])
     st.button("🤖 Générer avec Groq", on_click=on_generate)
     script = st.text_area("Script (modifiable)", key=key, height=250)
     st.caption(f"{len(script.split())} mots")
@@ -197,7 +204,7 @@ if project_id:
     elif not audio_assets:
         st.info("Génère d'abord la voix off pour passer aux visuels.")
     else:
-        render_illustrations(project, script)
+        render_illustrations(project, script, cfg)
 
     st.subheader("5. Sous-titres")
     timing_assets = [a for a in list_assets(project_id, "timings") if Path(a["file_path"]).exists()]
@@ -233,7 +240,19 @@ if project_id:
             format_func=lambda f: "Plein écran recadré (recommandé)" if f == "crop" else "Vidéo entière sur fond flou",
             horizontal=True,
         )
-        if st.button("🎬 Monter la vidéo"):
+        b1, b2 = st.columns(2)
+        if b2.button("👀 Aperçu de 20 s (plus rapide)"):
+            try:
+                with st.spinner("Montage de l'aperçu..."):
+                    preview = render_project(project_id, framing=framing, preview_seconds=20)
+            except VideoEditError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state[f"preview_{project_id}"] = str(preview["path"])
+        if st.session_state.get(f"preview_{project_id}") and Path(st.session_state[f"preview_{project_id}"]).exists():
+            st.caption("Aperçu des 20 premières secondes (rien n'est enregistré dans l'historique) :")
+            st.video(st.session_state[f"preview_{project_id}"])
+        if b1.button("🎬 Monter la vidéo"):
             try:
                 with st.spinner("Montage en cours (quelques minutes selon ton PC)..."):
                     result = render_project(project_id, framing=framing)
@@ -253,3 +272,30 @@ if project_id:
                 st.text_area("Crédits à coller dans la description YouTube",
                              st.session_state[f"credits_{project_id}"], height=100)
             st.warning("Vérifie les faits, les droits des médias, la narration et le montage avant de publier.")
+
+            st.subheader("7. Kit de publication")
+            credits = project_credits(project_id)
+            kit_key = f"kit_{project_id}"
+            if st.button("📝 Générer le kit de publication"):
+                with st.spinner("Préparation du kit (Groq)..."):
+                    kit, fallback = build_kit(project["topic"] or project["title"], script, cfg, credits,
+                                              project["style"])
+                st.session_state[kit_key] = kit
+                if fallback:
+                    st.warning("Kit automatique indisponible : propositions minimales. Vérifie ta clé Groq.")
+            kit = st.session_state.get(kit_key)
+            if kit:
+                st.markdown("**Titres proposés**")
+                for t in kit["titles"]:
+                    st.code(t, language=None)
+                st.text_area("Description YouTube", kit["description"], height=160, key=f"kdesc_{project_id}")
+                st.text_area("Tags", ", ".join(kit["tags"]), height=70, key=f"ktags_{project_id}")
+                st.text_area("Commentaire épinglé", kit["pinned_comment"], height=70, key=f"kcom_{project_id}")
+                items = checklist(project, exports[0]["duration"], credits, project["style"])
+                st.markdown("**Avant de publier**")
+                for label, ok in items:
+                    st.write(("✅ " if ok else "⬜ ") + label)
+                text = kit_to_text(kit, items)
+                if st.button("💾 Enregistrer le kit à côté de la vidéo"):
+                    st.success(f"Enregistré : {save_kit(text, exports[0]['file_path'])}")
+                st.download_button("⬇️ Télécharger le kit (.txt)", text, file_name=f"project_{project_id}_kit.txt")

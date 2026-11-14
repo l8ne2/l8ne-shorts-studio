@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS projects (
     error TEXT,
     style TEXT NOT NULL DEFAULT 'stock',
     character_id INTEGER,
+    look TEXT NOT NULL DEFAULT 'auto',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -95,6 +96,8 @@ def _migrate(conn) -> None:
         conn.execute("ALTER TABLE projects ADD COLUMN style TEXT NOT NULL DEFAULT 'stock'")
     if "character_id" not in cols:
         conn.execute("ALTER TABLE projects ADD COLUMN character_id INTEGER")
+    if "look" not in cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN look TEXT NOT NULL DEFAULT 'auto'")
 
 
 def init_db(db_path=None, channels_dir=None) -> None:
@@ -119,13 +122,13 @@ def list_channels(db_path=None) -> list:
 
 
 def create_project(channel_id: int, title: str, topic: str = "", style: str = "stock",
-                   character_id: int = None, db_path=None) -> int:
+                   character_id: int = None, look: str = "auto", db_path=None) -> int:
     now = _now()
     with get_connection(db_path) as conn:
         cur = conn.execute(
-            """INSERT INTO projects (channel_id, title, topic, status, style, character_id, created_at, updated_at)
-               VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?)""",
-            (channel_id, title, topic, style, character_id, now, now),
+            """INSERT INTO projects (channel_id, title, topic, status, style, character_id, look, created_at, updated_at)
+               VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?)""",
+            (channel_id, title, topic, style, character_id, look, now, now),
         )
         return cur.lastrowid
 

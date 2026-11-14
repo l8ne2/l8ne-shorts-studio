@@ -17,7 +17,20 @@ def target_words(duration_s: int) -> int:
     return int(duration_s * WORDS_PER_SECOND)
 
 
-def build_messages(topic: str, channel_cfg: dict) -> list:
+TONES = {
+    "channel": ("Ton de la chaîne", ""),
+    "funny": ("Drôle et absurde", "Ton humoristique : exagérations, comparaisons absurdes, autodérision, "
+              "une chute drôle. Reste exact sur les faits : l'humour ne doit pas déformer l'information."),
+    "suspense": ("Suspense", "Ton à suspense : phrases courtes et tendues, questions en suspens, "
+                 "révélation progressive, dernière phrase qui laisse un frisson."),
+    "emotional": ("Émouvant", "Ton doux et sincère : situations du quotidien, émotions simples, "
+                  "une conclusion rassurante."),
+    "teaching": ("Pédagogique", "Ton clair de professeur sympa : une explication pas à pas, "
+                 "un exemple concret, un résumé final en une phrase."),
+}
+
+
+def build_messages(topic: str, channel_cfg: dict, tone: str = None) -> list:
     style = channel_cfg.get("style", {})
     words = target_words(channel_cfg["duration"])
     system = (
@@ -31,10 +44,15 @@ def build_messages(topic: str, channel_cfg: dict) -> list:
         f"Ton : {style.get('tone', 'neutre')} ; narration : {style.get('narration', 'classique')}\n"
         f"Durée visée : {channel_cfg['duration']} secondes, soit environ {words} mots.\n\n"
         f"Sujet : {topic}\n\n"
-        "Structure : une accroche forte dans la première phrase, un développement "
-        "clair avec des phrases courtes, puis une conclusion ou une question finale.\n"
+        "Structure : \n"
+        "1. ACCROCHE (première phrase, 12 mots maximum) : une question surprenante ou une contradiction "
+        "qui donne envie de rester. Jamais de salutation (« Bonjour », « Salut », « Aujourd'hui »...).\n"
+        "2. DÉVELOPPEMENT : phrases courtes, une idée par phrase ; explique l'idée principale avec une "
+        "image ou une métaphore concrète que l'on peut dessiner.\n"
+        "3. CHUTE : une conclusion marquante ou une question finale.\n"
         "Règles : n'invente aucun fait, chiffre ou date ; si une information est incertaine "
         "ou hypothétique, dis-le explicitement."
+        + (f"\n{TONES[tone][1]}" if tone in TONES and TONES[tone][1] else "")
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -70,7 +88,7 @@ def call_groq(client, messages: list, max_tokens: int, temperature: float = 0.7,
     raise last_error
 
 
-def generate_script(topic: str, channel_cfg: dict, client=None, model: str = None) -> str:
+def generate_script(topic: str, channel_cfg: dict, client=None, model: str = None, tone: str = None) -> str:
     """Retourne le script généré. `client` est injectable pour les tests."""
     if not topic.strip():
         raise ScriptGenerationError("Le sujet est vide.")
@@ -82,7 +100,7 @@ def generate_script(topic: str, channel_cfg: dict, client=None, model: str = Non
 
         client = Groq(api_key=api_key)
     try:
-        text = call_groq(client, build_messages(topic, channel_cfg), max_tokens=2500, model=model)
+        text = call_groq(client, build_messages(topic, channel_cfg, tone), max_tokens=2500, model=model)
     except Exception as exc:  # erreurs réseau, quota (429), aucun modèle disponible...
         raise ScriptGenerationError(f"Appel Groq échoué : {exc}") from exc
     script = clean_script(text)

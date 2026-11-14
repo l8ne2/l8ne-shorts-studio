@@ -11,6 +11,7 @@ from pathlib import Path
 
 from core.config import ROOT, load_channel
 from core.animator import SceneSpec, render_scene
+from core.looks import resolve_look
 from core.lipsync import audio_envelope, gesture_levels, mouth_levels
 from core.subtitle_generator import cue_params, to_ass, words_to_cues
 from core.video_editor import (
@@ -73,7 +74,30 @@ def _prepare_clips(plan: list, durations: list, audio, out: Path, ffmpeg: str = 
     return clips, anim_dir
 
 
-def render_project(project_id: int, framing: str = "crop", db_path=None, output_dir=None, **editor_kwargs) -> dict:
+def trim_scenes(plan: list, durations: list, limit: float):
+    """Garde les scènes qui tiennent dans les `limit` premières secondes (la dernière est raccourcie)."""
+    kept, kept_d, total = [], [], 0.0
+    for entry, dur in zip(plan, durations):
+        if total >= limit - 0.05:
+            break
+        use = min(dur, limit - total)
+        kept.append(entry)
+        kept_d.append(round(use, 3))
+        total += use
+    return kept, kept_d
+
+
+def credits_from_plan(plan: list) -> str:
+    return "\n".join(dict.fromkeys(e["credit"] for e in plan if e.get("credit")))
+
+
+def project_credits(project_id: int, db_path=None) -> str:
+    path = _asset_path(project_id, "scenes", db_path)
+    return credits_from_plan(json.loads(path.read_text(encoding="utf-8"))) if path else ""
+
+
+def render_project(project_id: int, framing: str = "crop", db_path=None, output_dir=None,
+                   preview_seconds: float = None, **editor_kwargs) -> dict:
     project = db.get_project(project_id, db_path)
     missing = missing_steps(project_id, db_path)
     if missing:
@@ -84,29 +108,36 @@ def render_project(project_id: int, framing: str = "crop", db_path=None, output_
     audio = _asset_path(project_id, "audio", db_path)
     ass = _asset_path(project_id, "subtitles_ass", db_path)
 
-    db.set_status(project_id, "RENDERING", db_path=db_path)
+    preview = bool(preview_seconds)
+    if not preview:  # un aperçu ne modifie ni le statut ni l'historique du projet
+        db.set_status(project_id, "RENDERING", db_path=db_path)
     try:
         audio_duration = editor_kwargs.pop("audio_duration", None) or probe_duration(audio)
         durations = compute_scene_durations([s["text"] for s in plan], words, audio_duration)
+        if preview:
+            plan, durations = trim_scenes(plan, durations, preview_seconds)
         safe_title = re.sub(r"[^a-zA-Z0-9]+", "_", project["title"]).strip("_").lower() or "short"
-        out = Path(output_dir or OUTPUT_DIR) / project["channel_slug"] / f"{safe_title}_{project_id}.mp4"
+        out = Path(output_dir or OUTPUT_DIR) / project["channel_slug"] / f"{safe_title}_{project_id}{'_apercu' if preview else ''}.mp4"
         labels = _scene_labels(plan, durations)
-        if labels:  # étiquettes à l'écran : on régénère le .ass en y ajoutant les étiquettes
-            style_name = load_channel(project["channel_slug"]).get("style", {}).get("subtitles", "modernes")
-            ass_text = to_ass(words_to_cues(words, **cue_params(style_name)), style_name, labels)
-            ass = ass.with_name(ass.stem + "_labels.ass")
-            ass.write_text(ass_text, encoding="utf-8")
+        channel_cfg = load_channel(project["channel_slug"])
+        look = resolve_look(project.get("look"), channel_cfg)
+        style_name = look["subtitles"] or channel_cfg.get("style", {}).get("subtitles", "modernes")
+        # le fichier .ass est toujours régénéré : style de sous-titres du look + étiquettes à l'écran
+        ass_text = to_ass(words_to_cues(words, **cue_params(style_name)), style_name, labels)
+        ass = ass.with_name(ass.stem + "_final.ass")
+        ass.write_text(ass_text, encoding="utf-8")
         clips, anim_dir = _prepare_clips(plan, durations, audio, out, editor_kwargs.get("ffmpeg"))
         try:
-            result = assemble_video(clips, durations, audio, ass, out, framing=framing, **editor_kwargs)
+            result = assemble_video(clips, durations, audio, ass, out, framing=framing, grade=look["grade"], **editor_kwargs)
         finally:
             if anim_dir:
                 shutil.rmtree(anim_dir, ignore_errors=True)
     except Exception as exc:
-        db.set_status(project_id, "ERROR", error=str(exc), db_path=db_path)
+        if not preview:
+            db.set_status(project_id, "ERROR", error=str(exc), db_path=db_path)
         raise
     final_duration = probe_duration(result) or sum(durations)
-    db.add_export(project_id, result, round(final_duration), db_path=db_path)
-    db.set_status(project_id, "COMPLETED", db_path=db_path)
-    credits = "\n".join(dict.fromkeys(s.get("credit", "") for s in plan if s.get("credit")))
-    return {"path": result, "duration": final_duration, "credits": credits}
+    if not preview:
+        db.add_export(project_id, result, round(final_duration), db_path=db_path)
+        db.set_status(project_id, "COMPLETED", db_path=db_path)
+    return {"path": result, "duration": final_duration, "credits": credits_from_plan(plan), "preview": preview}

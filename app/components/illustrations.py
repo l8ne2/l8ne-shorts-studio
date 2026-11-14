@@ -6,13 +6,18 @@ import streamlit as st
 
 from core import illustrator
 from core.image_generator import ImageGenerationError
+from core.looks import resolve_look
+from core.puppet import PuppetDesign, describe_design
 from core.scene_planner import plan_scenes
 from core.styles import EMOTION_LABELS, EMOTIONS, get_style
 from core.visual_finder import split_scenes
 from database.db import get_character, list_expressions, replace_asset, set_status
 
 
-def render_illustrations(project, script: str) -> None:
+SCENE_TYPES = {"puppet": "Marionnette devant décor", "illustration": "Illustration complète"}
+
+
+def render_illustrations(project, script: str, cfg: dict) -> None:
     pid = project["id"]
     style_key = project["style"]
     style = get_style(style_key)
@@ -25,7 +30,8 @@ def render_illustrations(project, script: str) -> None:
         st.warning("Ce style a besoin d'un personnage : crée-le dans le « Studio personnages » puis recrée le projet.")
         return
 
-    st.caption(f"Style : {style['label']}" + (f" · Personnage : {character['name']}" if character else ""))
+    look = resolve_look(project.get("look"), cfg)
+    st.caption(f"Style : {style['label']} · Ambiance : {look['label']}" + (f" · Personnage : {character['name']}" if character else ""))
     if sprite_mode and not any(Path(p).exists() for p in expressions.values()):
         st.warning("Ce style utilise un personnage découpé : crée ses expressions dans le « Studio personnages ».")
         return
@@ -47,6 +53,7 @@ def render_illustrations(project, script: str) -> None:
                 st.session_state[f"visual_{pid}_{i}"] = p["visual"]
                 st.session_state[f"emotion_{pid}_{i}"] = p["emotion"]
                 st.session_state[f"label_{pid}_{i}"] = p["label"]
+                st.session_state[f"type_{pid}_{i}"] = p.get("type", "puppet")
             if fallback:
                 st.warning("Plan automatique indisponible : le sujet a été utilisé comme description. Modifie-les à la main.")
 
@@ -55,13 +62,21 @@ def render_illustrations(project, script: str) -> None:
         return
     images = st.session_state.setdefault(img_key, {})
 
+    def scene_type(i: int) -> str:
+        return st.session_state.get(f"type_{pid}_{i}", "puppet") if puppet_mode else "puppet"
+
     def generate(i: int, attempt: int = 0) -> bool:
+        full = puppet_mode and scene_type(i) == "illustration"
+        if full:  # le personnage est dessiné dans l'image : on décrit sa tenue à l'IA
+            description = describe_design(PuppetDesign.from_json(character["description"]))
+        else:
+            description = character["description"] if character and not (sprite_mode or puppet_mode) else None
         try:
             images[i] = {
                 "path": str(illustrator.generate_scene_image(
-                    pid, i, st.session_state[f"visual_{pid}_{i}"], style_key,
-                    character["description"] if character and not (sprite_mode or puppet_mode) else None, attempt=attempt)),
-                "attempt": attempt,
+                    pid, i, st.session_state[f"visual_{pid}_{i}"], style_key, description, attempt=attempt,
+                    look_prefix=look["bg_prefix"], full_scene=full)),
+                "attempt": attempt, "type": scene_type(i),
             }
             return True
         except ImageGenerationError as exc:
@@ -75,12 +90,16 @@ def render_illustrations(project, script: str) -> None:
         with left:
             st.markdown(f"**Scène {i + 1}** — {scene['text']}")
             st.text_area("Description du décor (anglais)", key=f"visual_{pid}_{i}", height=70)
+            if puppet_mode:
+                st.selectbox("Type de scène", list(SCENE_TYPES), key=f"type_{pid}_{i}",
+                             format_func=lambda t: SCENE_TYPES[t])
             c1, c2 = st.columns(2)
-            if emotion_mode:
+            if emotion_mode and scene_type(i) == "puppet":
                 c1.selectbox("Expression", EMOTIONS, key=f"emotion_{pid}_{i}",
                              format_func=lambda e: EMOTION_LABELS[e])
-            if style["labels"]:
-                c2.text_input("Étiquette à l'écran", key=f"label_{pid}_{i}")
+            c2.text_input("Texte à l'écran (facultatif)", key=f"label_{pid}_{i}")
+            if i in images and images[i].get("type") != scene_type(i):
+                st.caption("⚠️ Type de scène modifié : clique sur « Autre variante » pour régénérer l'image.")
             if i in images and st.button("🔄 Autre variante", key=f"regen_{pid}_{i}"):
                 with st.spinner("Nouvelle variante..."):
                     generate(i, images[i]["attempt"] + 1)
@@ -89,7 +108,7 @@ def render_illustrations(project, script: str) -> None:
                 st.image(images[i]["path"])
 
     if st.button("🎨 Générer les images manquantes"):
-        todo = [i for i in range(len(plan)) if i not in images]
+        todo = [i for i in range(len(plan)) if i not in images or images[i].get("type") != scene_type(i)]
         bar = st.progress(0.0, text="Génération...")
         for n, i in enumerate(todo, 1):
             if not generate(i):
@@ -97,15 +116,16 @@ def render_illustrations(project, script: str) -> None:
             bar.progress(n / len(todo), text=f"Image {n}/{len(todo)}")
         st.rerun()
 
-    if len(images) == len(plan) and st.button("✅ Valider les illustrations"):
+    ready = all(i in images and images[i].get("type") == scene_type(i) for i in range(len(plan)))
+    if ready and st.button("✅ Valider les illustrations"):
         entries = []
         for i, scene in enumerate(plan):
             current = {"visual": st.session_state[f"visual_{pid}_{i}"],
                        "emotion": st.session_state.get(f"emotion_{pid}_{i}", "neutral"),
-                       "label": st.session_state.get(f"label_{pid}_{i}", "") if style["labels"] else ""}
+                       "label": st.session_state.get(f"label_{pid}_{i}", "")}
             sprite = illustrator.pick_sprite(expressions, current["emotion"]) if sprite_mode else None
             animation = None
-            if puppet_mode:
+            if puppet_mode and scene_type(i) == "puppet":
                 animation = {"type": "puppet", "design": json.loads(character["description"] or "{}")}
             elif sprite:
                 animation = {"type": "sprite"}
