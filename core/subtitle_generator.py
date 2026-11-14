@@ -11,9 +11,12 @@ END_PUNCT = (".", "!", "?", "…")
 
 # Styles ASS par réglage `style.subtitles` des chaînes (couleurs au format &HAABBGGRR)
 STYLES = {
-    "modernes": {"font": "Arial", "size": 78, "primary": "&H00FFFFFF", "outline": 6, "uppercase": False},
-    "marqués": {"font": "Arial", "size": 84, "primary": "&H00FFFFFF", "outline": 8, "uppercase": False},
-    "dynamiques": {"font": "Arial", "size": 90, "primary": "&H0000FFFF", "outline": 8, "uppercase": True},
+    "modernes": {"font": "Arial", "size": 78, "primary": "&H00FFFFFF", "outline": 6, "uppercase": False,
+                 "max_words": 4, "max_chars": 24},
+    "marqués": {"font": "Arial", "size": 84, "primary": "&H00FFFFFF", "outline": 8, "uppercase": False,
+                "max_words": 4, "max_chars": 22},
+    "dynamiques": {"font": "Arial", "size": 88, "primary": "&H0000FFFF", "outline": 8, "uppercase": True,
+                   "max_words": 3, "max_chars": 16},
 }
 DEFAULT_STYLE = "modernes"
 
@@ -96,16 +99,18 @@ def to_srt(cues: list) -> str:
     return "\n".join(blocks)
 
 
-def to_ass(cues: list, style_name: str = DEFAULT_STYLE) -> str:
+def to_ass(cues: list, style_name: str = DEFAULT_STYLE, labels: list = None) -> str:
     st = STYLES.get(style_name, STYLES[DEFAULT_STYLE])
     header = (
-        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n\n"
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 0\n\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,{st['font']},{st['size']},{st['primary']},&H00FFFFFF,&H00000000,&H80000000,"
-        f"-1,0,0,0,100,100,0,0,1,{st['outline']},2,2,80,80,420,1\n\n"
+        f"-1,0,0,0,100,100,0,0,1,{st['outline']},2,2,80,80,420,1\n"
+        f"Style: Label,{st['font']},68,&H00FFFFFF,&H00FFFFFF,&H00502A14,&H00000000,"
+        f"-1,0,0,0,100,100,0,0,3,16,0,8,80,80,300,1\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
     lines = []
@@ -114,20 +119,30 @@ def to_ass(cues: list, style_name: str = DEFAULT_STYLE) -> str:
         if st["uppercase"]:
             text = text.upper()
         lines.append(f"Dialogue: 0,{_ass_time(c['start'])},{_ass_time(c['end'])},Default,,0,0,0,,{text}")
+    for lab in labels or []:
+        text = re.sub(r"[{}]", "", lab["text"]).replace("\n", " ")
+        pop = r"{\fad(150,150)\fscx85\fscy85\t(0,180,\fscx100\fscy100)}"
+        lines.append(f"Dialogue: 1,{_ass_time(lab['start'])},{_ass_time(lab['end'])},Label,,0,0,0,,{pop}{text}")
     return header + "\n".join(lines) + "\n"
+
+
+def cue_params(style_name: str) -> dict:
+    """Taille maximale des sous-titres selon le style (les gros styles sont coupés plus court)."""
+    st = STYLES.get(style_name, STYLES[DEFAULT_STYLE])
+    return {"max_words": st["max_words"], "max_chars": st["max_chars"]}
 
 
 def generate_subtitles(words_path, channel_cfg: dict, out_dir=None, basename: str = None) -> dict:
     """Crée <basename>.srt et <basename>.ass à côté du fichier d'horodatage."""
     words_path = Path(words_path)
     words = load_words(words_path)
-    cues = words_to_cues(words)
+    style_name = channel_cfg.get("style", {}).get("subtitles", DEFAULT_STYLE)
+    cues = words_to_cues(words, **cue_params(style_name))
     if not cues:
         raise SubtitleError("Aucun sous-titre généré.")
     out_dir = Path(out_dir or words_path.parent)
     out_dir.mkdir(parents=True, exist_ok=True)
     basename = basename or words_path.name.replace(".words.json", "")
-    style_name = channel_cfg.get("style", {}).get("subtitles", DEFAULT_STYLE)
     srt_path, ass_path = out_dir / f"{basename}.srt", out_dir / f"{basename}.ass"
     srt_path.write_text(to_srt(cues), encoding="utf-8")
     ass_path.write_text(to_ass(cues, style_name), encoding="utf-8")

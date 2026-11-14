@@ -3,4 +3,8 @@ python-dotenv
 pyyaml
 groq
 edge-tts
+requests
+pillow
+numpy
 pytest
+# Optionnel (meilleur retrait du fond des personnages) : pip install rembg onnxruntime

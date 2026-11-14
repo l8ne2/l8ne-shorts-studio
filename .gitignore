@@ -10,3 +10,4 @@ output/*/*
 !.gitkeep
 .pytest_cache/
 media/cache/
+media/characters/

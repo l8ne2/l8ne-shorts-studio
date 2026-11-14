@@ -13,6 +13,9 @@ from core.subtitle_generator import expand_sentences
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
 FRAMINGS = ("crop", "blur")
 TAIL_SECONDS = 0.4  # petit silence après la dernière parole
+IMAGE_EXTS = (".jpg", ".jpeg", ".png")
+MOTIONS = ("zoom_in", "pan_right", "zoom_out", "pan_left")  # alternés d'une scène à l'autre
+SPRITE_HEIGHT, SPRITE_MARGIN = 720, 330
 
 
 class VideoEditError(Exception):
@@ -70,6 +73,28 @@ def _scene_filter(framing: str) -> list:
     return ["-vf", vf]
 
 
+def _image_scene_args(index: int, duration: float, sprite) -> list:
+    """Arguments FFmpeg pour animer une image (mouvement de caméra) et poser le personnage dessus."""
+    frames = max(2, round(duration * FPS))
+    motion = MOTIONS[index % len(MOTIONS)]
+    center_y = "y='(ih-ih/zoom)/2'"
+    z, x = {
+        "zoom_in": (f"1+0.12*on/{frames}", "x='(iw-iw/zoom)/2'"),
+        "zoom_out": (f"1.12-0.12*on/{frames}", "x='(iw-iw/zoom)/2'"),
+        "pan_right": ("1.12", f"x='(iw-iw/zoom)*on/{frames}'"),
+        "pan_left": ("1.12", f"x='(iw-iw/zoom)*(1-on/{frames})'"),
+    }[motion]
+    # l'image est agrandie 2x avant zoompan : évite les saccades du mouvement
+    bg = (f"scale={WIDTH * 2}:{HEIGHT * 2}:flags=lanczos,"
+          f"zoompan=z='{z}':{x}:{center_y}:d={frames}:s={WIDTH}x{HEIGHT}:fps={FPS},setsar=1")
+    if not sprite:
+        return ["-vf", bg]
+    bounce = (f"H-h-{SPRITE_MARGIN}+if(lt(t,0.35),(0.35-t)*1000,0)-16*abs(sin(2*PI*1.1*t))")
+    graph = (f"[0:v]{bg}[bg];[1:v]scale=-2:{SPRITE_HEIGHT},format=rgba[sp];"
+             f"[bg][sp]overlay=x=(W-w)/2:y='{bounce}':shortest=1,fps={FPS}[v]")
+    return ["-filter_complex", graph, "-map", "[v]"]
+
+
 def _run(cmd: list, runner, cwd=None) -> None:
     try:
         result = runner(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -94,13 +119,21 @@ def probe_duration(path, ffprobe: str = None, runner=subprocess.run):
 
 
 def assemble_video(clips: list, durations: list, audio_path, ass_path, out_path,
-                   framing: str = "crop", ffmpeg: str = None, runner=subprocess.run) -> Path:
-    """Monte la vidéo finale. clips et durations : une entrée par scène, dans l'ordre."""
+                   framing: str = "crop", ffmpeg: str = None, runner=subprocess.run,
+                   sprites: list = None) -> Path:
+    """Monte la vidéo finale. clips et durations : une entrée par scène, dans l'ordre.
+
+    Un clip peut être une vidéo (.mp4) ou une image (.jpg/.png, animée par un mouvement de caméra) ;
+    `sprites` (optionnel) donne, par scène, le PNG du personnage à poser sur une image.
+    """
     if framing not in FRAMINGS:
         raise VideoEditError(f"Cadrage inconnu : {framing}")
     if len(clips) != len(durations) or not clips:
         raise VideoEditError("Clips et durées ne correspondent pas.")
-    for f in [*clips, audio_path, *([ass_path] if ass_path else [])]:
+    sprites = list(sprites or [None] * len(clips))
+    if len(sprites) != len(clips):
+        raise VideoEditError("Sprites et clips ne correspondent pas.")
+    for f in [*clips, audio_path, *([ass_path] if ass_path else []), *[sp for sp in sprites if sp]]:
         if not Path(f).exists():
             raise VideoEditError(f"Fichier introuvable : {f}")
     ffmpeg = ffmpeg or find_ffmpeg()
@@ -114,11 +147,18 @@ def assemble_video(clips: list, durations: list, audio_path, ass_path, out_path,
         tmp.mkdir(parents=True, exist_ok=True)
         # 1. un clip par scène, à la durée exacte (boucle si le clip est trop court)
         scene_files = []
-        for i, (clip, dur) in enumerate(zip(clips, durations), 1):
+        for i, (clip, dur, sprite) in enumerate(zip(clips, durations, sprites), 1):
             scene = tmp / f"scene_{i}.mp4"
-            _run(base + ["-stream_loop", "-1", "-i", str(Path(clip).resolve()), "-t", f"{dur:.3f}",
-                         *_scene_filter(framing), "-an", "-c:v", "libx264", "-preset", "veryfast",
-                         "-crf", "18", "-pix_fmt", "yuv420p", "-r", str(FPS), str(scene)], runner)
+            if Path(clip).suffix.lower() in IMAGE_EXTS:
+                inputs = ["-i", str(Path(clip).resolve())]
+                if sprite:
+                    inputs += ["-loop", "1", "-framerate", str(FPS), "-i", str(Path(sprite).resolve())]
+                args = inputs + ["-t", f"{dur:.3f}", *_image_scene_args(i - 1, dur, sprite)]
+            else:
+                args = ["-stream_loop", "-1", "-i", str(Path(clip).resolve()), "-t", f"{dur:.3f}",
+                        *_scene_filter(framing)]
+            _run(base + args + ["-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                                "-pix_fmt", "yuv420p", "-r", str(FPS), str(scene)], runner)
             scene_files.append(scene)
         # 2. concaténation sans ré-encodage
         (tmp / "list.txt").write_text("".join(f"file '{s.name}'\n" for s in scene_files), encoding="utf-8")

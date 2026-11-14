@@ -20,6 +20,7 @@ render_sidebar()
 pages = [
     st.Page("pages/dashboard.py", title="Dashboard", icon="📊", default=True),
     st.Page("pages/channels.py", title="Chaînes", icon="📺"),
+    st.Page("pages/studio.py", title="Studio personnages", icon="🎭"),
     st.Page("pages/create_video.py", title="Créer une vidéo", icon="✍️"),
     st.Page("pages/projects.py", title="Projets", icon="🗂️"),
     st.Page("pages/settings.py", title="Paramètres", icon="⚙️"),

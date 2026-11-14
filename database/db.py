@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS projects (
     script TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'DRAFT',
     error TEXT,
+    style TEXT NOT NULL DEFAULT 'stock',
+    character_id INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -44,6 +46,20 @@ CREATE TABLE IF NOT EXISTS assets (
     asset_type TEXT NOT NULL,
     file_path TEXT NOT NULL,
     source TEXT
+);
+CREATE TABLE IF NOT EXISTS characters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    style TEXT NOT NULL,
+    description TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS character_expressions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_id INTEGER NOT NULL REFERENCES characters(id),
+    emotion TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    UNIQUE(character_id, emotion)
 );
 CREATE TABLE IF NOT EXISTS exports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,11 +83,21 @@ def get_connection(db_path=None) -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn) -> None:
+    """Ajoute les colonnes apparues après la première version, sans toucher aux données."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(projects)")}
+    if "style" not in cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN style TEXT NOT NULL DEFAULT 'stock'")
+    if "character_id" not in cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN character_id INTEGER")
+
+
 def init_db(db_path=None, channels_dir=None) -> None:
     """Crée les tables et synchronise les chaînes depuis les fichiers YAML."""
     kwargs = {"channels_dir": channels_dir} if channels_dir else {}
     with get_connection(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         for slug, cfg in load_all_channels(**kwargs).items():
             conn.execute(
                 """INSERT INTO channels (slug, name, niche, config)
@@ -87,13 +113,14 @@ def list_channels(db_path=None) -> list:
         return conn.execute("SELECT * FROM channels ORDER BY id").fetchall()
 
 
-def create_project(channel_id: int, title: str, topic: str = "", db_path=None) -> int:
+def create_project(channel_id: int, title: str, topic: str = "", style: str = "stock",
+                   character_id: int = None, db_path=None) -> int:
     now = _now()
     with get_connection(db_path) as conn:
         cur = conn.execute(
-            """INSERT INTO projects (channel_id, title, topic, status, created_at, updated_at)
-               VALUES (?, ?, ?, 'DRAFT', ?, ?)""",
-            (channel_id, title, topic, now, now),
+            """INSERT INTO projects (channel_id, title, topic, status, style, character_id, created_at, updated_at)
+               VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?)""",
+            (channel_id, title, topic, style, character_id, now, now),
         )
         return cur.lastrowid
 
@@ -187,3 +214,52 @@ def list_exports(project_id: int, db_path=None) -> list:
         return conn.execute(
             "SELECT * FROM exports WHERE project_id = ? ORDER BY id DESC", (project_id,)
         ).fetchall()
+
+
+# --- Personnages (studio) ---------------------------------------------------------------------
+
+def create_character(name: str, style: str, description: str, db_path=None) -> int:
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO characters (name, style, description, created_at) VALUES (?, ?, ?, ?)",
+            (name, style, description, _now()),
+        )
+        return cur.lastrowid
+
+
+def get_character(character_id: int, db_path=None):
+    with get_connection(db_path) as conn:
+        return conn.execute("SELECT * FROM characters WHERE id = ?", (character_id,)).fetchone()
+
+
+def list_characters(style: str = None, db_path=None) -> list:
+    query, params = "SELECT * FROM characters", []
+    if style:
+        query += " WHERE style = ?"
+        params.append(style)
+    with get_connection(db_path) as conn:
+        return conn.execute(query + " ORDER BY id DESC", params).fetchall()
+
+
+def update_character(character_id: int, name: str, description: str, db_path=None) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute("UPDATE characters SET name = ?, description = ? WHERE id = ?",
+                     (name, description, character_id))
+
+
+def set_expression(character_id: int, emotion: str, file_path, db_path=None) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """INSERT INTO character_expressions (character_id, emotion, file_path) VALUES (?, ?, ?)
+               ON CONFLICT(character_id, emotion) DO UPDATE SET file_path = excluded.file_path""",
+            (character_id, emotion, str(file_path)),
+        )
+
+
+def list_expressions(character_id: int, db_path=None) -> dict:
+    """Retourne {emotion: chemin}."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT emotion, file_path FROM character_expressions WHERE character_id = ?", (character_id,)
+        ).fetchall()
+    return {r["emotion"]: r["file_path"] for r in rows}

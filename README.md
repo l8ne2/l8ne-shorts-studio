@@ -11,8 +11,10 @@ Aucune vidéo n'est publiée automatiquement : tu vérifies les faits, les droit
 ## État du projet
 
 - [x] Phase 1 — Fondations : dashboard Streamlit, configuration YAML des chaînes, base SQLite, statuts de projet
-- [ ] Phase 2 — Moteur de génération : Groq (scripts), Edge TTS (voix), Pexels (visuels), sous-titres
-- [ ] Phase 3 — Montage FFmpeg, prévisualisation, export MP4
+- [x] Phase 2 — Moteur de génération : Groq (scripts), Edge TTS (voix), Pixabay/Pexels (visuels de stock), sous-titres
+- [x] Phase 3 — Montage FFmpeg, prévisualisation, export MP4
+- [x] Styles animés : dessin animé 2D, personnage 3D coloré, explication 3D en coupe (images IA via Cloudflare Workers AI) et studio de personnages
+- [ ] Tests sur les trois chaînes et version 1.0
 
 ## Installation (Windows)
 
