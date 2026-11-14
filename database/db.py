@@ -75,10 +75,15 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _dict_factory(cursor, row) -> dict:
+    """Les lignes sont de simples dict : copiables (Streamlit copie les choix des listes déroulantes)."""
+    return {col[0]: row[i] for i, col in enumerate(cursor.description)}
+
+
 def get_connection(db_path=None) -> sqlite3.Connection:
     path = Path(db_path or os.getenv("L8NE_DB_PATH") or DEFAULT_DB_PATH)
     conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = _dict_factory
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 

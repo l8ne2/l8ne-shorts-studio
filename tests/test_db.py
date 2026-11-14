@@ -50,3 +50,18 @@ def test_statut_invalide(db_path):
     pid = db.create_project(ch["id"], "Test", db_path=db_path)
     with pytest.raises(ValueError):
         db.set_status(pid, "N_IMPORTE_QUOI", db_path=db_path)
+
+
+def test_lignes_copiables_pour_streamlit(db_path):
+    """Streamlit copie (deepcopy/pickle) les options des listes déroulantes : les lignes doivent le supporter."""
+    import copy
+    import pickle
+
+    ch = db.list_channels(db_path)[0]
+    cid = db.create_character("Bob", "puppet_2d", "{}", db_path=db_path)
+    pid = db.create_project(ch["id"], "T", db_path=db_path)
+    for rows in (db.list_channels(db_path), db.list_characters(db_path=db_path),
+                 db.list_projects(db_path=db_path), [db.get_project(pid, db_path)]):
+        assert copy.deepcopy(rows) == rows
+        assert pickle.loads(pickle.dumps(rows)) == rows
+    assert cid
