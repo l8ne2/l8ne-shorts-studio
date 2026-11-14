@@ -7,7 +7,7 @@ framing: "crop"  # crop = plein écran recadré ; blur = vidéo entière sur fon
 
 voice:
   name: "fr-FR-RemyMultilingualNeural"
-  rate: "-5%"
+  rate: "+10%"
 
 style:
   tone: "intrigant et posé"

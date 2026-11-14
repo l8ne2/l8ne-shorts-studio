@@ -18,7 +18,7 @@ WORDS = [W("Bonjour", 0.0, 0.5), W("à", 0.5, 0.6), W("tous.", 0.6, 1.0),
 
 def test_regroupement_par_ponctuation_et_taille():
     cues = words_to_cues(WORDS)
-    assert cues[0] == {"start": 0.0, "end": 1.0, "text": "Bonjour à tous."}
+    assert cues[0] == {"start": 0.0, "end": 1.1, "text": "Bonjour à tous."}  # prolongé jusqu'au suivant : pas de trou
     assert all(len(c["text"].split()) <= 4 for c in cues)
     assert " ".join(c["text"] for c in cues) == " ".join(w["text"] for w in WORDS)
 
@@ -64,3 +64,10 @@ def test_erreurs(tmp_path):
     vide.write_text("[]")
     with pytest.raises(SubtitleError):
         generate_subtitles(vide, {})
+
+
+def test_pas_de_trou_entre_sous_titres():
+    cues = words_to_cues([W("un", 0, 0.5), W("deux.", 0.5, 1.0), W("trois", 1.3, 1.8), W("fin.", 4.0, 4.4)])
+    assert cues[0]["end"] == 1.3                      # pause courte : affiché jusqu'au suivant
+    assert cues[1]["end"] == pytest.approx(2.05)      # longue pause : seulement un peu prolongé
+    assert cues[-1]["end"] == 4.4                     # le dernier garde sa fin réelle

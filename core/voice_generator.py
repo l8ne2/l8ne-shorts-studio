@@ -6,6 +6,8 @@ pour synchroniser les sous-titres.
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 from core.config import ROOT
@@ -43,6 +45,60 @@ async def _synthesize(text, voice, rate, audio_path, communicate_cls):
     return words, size
 
 
+def compute_cuts(words: list, cap: float = 0.22, lead: float = 0.12) -> list:
+    """Zones de silence à supprimer : [(début, fin), ...] en secondes de l'audio d'origine.
+
+    Chaque pause plus longue que `cap` est réduite à `cap` ; le silence au tout début est réduit à `lead`.
+    """
+    cuts = []
+    if words and words[0]["start"] > lead + 0.05:
+        cuts.append((0.0, words[0]["start"] - lead))
+    for a, b in zip(words, words[1:]):
+        if b["start"] - a["end"] > cap + 0.05:
+            cuts.append((a["end"] + cap / 2, b["start"] - cap / 2))
+    return cuts
+
+
+def shift_words(words: list, cuts: list) -> list:
+    """Recale les horodatages une fois les silences supprimés."""
+    def shift(t):
+        return t - sum(min(max(t - c0, 0.0), c1 - c0) for c0, c1 in cuts)
+    return [{**w, "start": round(shift(w["start"]), 3), "end": round(shift(w["end"]), 3)} for w in words]
+
+
+def tighten_pauses(audio_path, words: list, cap: float = 0.22, ffmpeg: str = None, runner=subprocess.run):
+    """Raccourcit les pauses trop longues de la voix. Retourne (mots_recalés, modifié).
+
+    N'échoue jamais : si FFmpeg est absent ou échoue, l'audio d'origine est conservé.
+    """
+    cuts = compute_cuts(words, cap)
+    ffmpeg = ffmpeg or shutil.which("ffmpeg")
+    if not cuts or not ffmpeg:
+        return words, False
+    audio_path = Path(audio_path)
+    bounds = [0.0] + [t for c in cuts for t in c]
+    segments = [(bounds[i], bounds[i + 1] if i + 1 < len(bounds) else None) for i in range(0, len(bounds), 2)]
+    segments = [(a, b) for a, b in segments if b is None or b - a > 0.01]
+    parts, labels = [], []
+    for i, (a, b) in enumerate(segments):
+        trim = f"start={a:.3f}" + (f":end={b:.3f}" if b is not None else "")
+        parts.append(f"[0:a]atrim={trim},asetpts=PTS-STARTPTS[a{i}]")
+        labels.append(f"[a{i}]")
+    graph = ";".join(parts) + f";{''.join(labels)}concat=n={len(labels)}:v=0:a=1[out]"
+    tmp = audio_path.with_name(audio_path.stem + ".tight.mp3")
+    try:
+        result = runner([ffmpeg, "-y", "-loglevel", "error", "-i", str(audio_path), "-filter_complex", graph,
+                         "-map", "[out]", "-c:a", "libmp3lame", "-q:a", "3", str(tmp)],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            return words, False
+        os.replace(tmp, audio_path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        return words, False
+    return shift_words(words, cuts), True
+
+
 def generate_voice(text: str, channel_cfg: dict, project_id: int, audio_dir=None, communicate_cls=None) -> dict:
     """Génère media/audio/project_<id>.mp3 et son fichier d'horodatage .words.json.
 
@@ -78,6 +134,8 @@ def generate_voice(text: str, channel_cfg: dict, project_id: int, audio_dir=None
         part_path.unlink(missing_ok=True)
         raise VoiceGenerationError(f"Edge TTS a échoué : {exc}") from exc
 
+    if voice_cfg.get("tighten", True):
+        words, _ = tighten_pauses(audio_path, words, cap=float(voice_cfg.get("pause", 0.22)))
     words_path.write_text(json.dumps(words, ensure_ascii=False, indent=1), encoding="utf-8")
     duration = max((w["end"] for w in words), default=None)
     return {"audio_path": audio_path, "words_path": words_path, "duration": duration, "voice": voice}

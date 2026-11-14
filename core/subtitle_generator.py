@@ -55,7 +55,8 @@ def _expand_sentences(words: list) -> list:
 expand_sentences = _expand_sentences  # utilisé aussi par le montage
 
 
-def words_to_cues(words: list, max_words: int = 4, max_chars: int = 28, pause: float = 0.35) -> list:
+def words_to_cues(words: list, max_words: int = 4, max_chars: int = 28, pause: float = 0.35,
+                  bridge: float = 0.5) -> list:
     """Regroupe les mots en sous-titres courts : [{'start', 'end', 'text'}]."""
     words = _expand_sentences(words)
     cues, current = [], []
@@ -74,6 +75,11 @@ def words_to_cues(words: list, max_words: int = 4, max_chars: int = 28, pause: f
         if len(current) >= max_words or text_len >= max_chars or w["text"].endswith(END_PUNCT):
             flush()
     flush()
+    # pas de « trou » : un sous-titre reste affiché jusqu'au suivant si la pause est courte,
+    # et un peu au-delà si elle est plus longue
+    for cur, nxt in zip(cues, cues[1:]):
+        gap = nxt["start"] - cur["end"]
+        cur["end"] = round(nxt["start"] if gap <= bridge else cur["end"] + 0.25, 3)
     return cues
 
 

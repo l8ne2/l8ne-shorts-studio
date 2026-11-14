@@ -97,6 +97,13 @@ if project_id:
     st.subheader("3. Voix off")
     voice_name = cfg.get("voice", {}).get("name", "voix par défaut")
     st.caption(f"Voix : {voice_name}. Le script enregistré est utilisé pour générer l'audio.")
+    try:
+        default_rate = int(str(cfg.get("voice", {}).get("rate", "+0%")).replace("%", "").replace("+", ""))
+    except ValueError:
+        default_rate = 0
+    rate = st.slider("Vitesse de la voix", -20, 40, min(max(default_rate, -20), 40), step=5,
+                     format="%+d%%", key=f"rate_{project_id}")
+    voice_cfg = {**cfg, "voice": {**cfg.get("voice", {}), "rate": f"{rate:+d}%"}}
     if st.button("🎙️ Générer la voix"):
         if not script.strip():
             st.error("Écris ou génère d'abord un script.")
@@ -104,7 +111,7 @@ if project_id:
             update_script(project_id, script)
             try:
                 with st.spinner("Génération de la voix..."):
-                    result = generate_voice(script, cfg, project_id)
+                    result = generate_voice(script, voice_cfg, project_id)
             except VoiceGenerationError as exc:
                 set_status(project_id, project["status"], error=str(exc))
                 st.error(str(exc))
