@@ -9,9 +9,10 @@ Un style décrit comment les images sont générées et assemblées :
 """
 
 EMOTIONS = ["neutral", "surprised", "happy", "angry", "sad", "thinking"]
+PUPPET_EMOTIONS = EMOTIONS + ["tired", "relaxed"]   # la marionnette dessinée sait en plus faire fatigué / détendu
 EMOTION_LABELS = {
     "neutral": "Neutre", "surprised": "Surpris", "happy": "Content",
-    "angry": "Énervé", "sad": "Triste", "thinking": "Réfléchit",
+    "angry": "Énervé", "sad": "Triste", "thinking": "Réfléchit", "tired": "Fatigué", "relaxed": "Détendu",
 }
 EMOTION_PROMPTS = {
     "neutral": "calm neutral expression, relaxed pose",

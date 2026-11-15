@@ -470,3 +470,59 @@ def test_look_en_base(tmp_path):
     assert db.get_project(db.create_project(ch["id"], "A", db_path=path), path)["look"] == "auto"
     pid = db.create_project(ch["id"], "B", look="nuit_cosy", db_path=path)
     assert db.get_project(pid, path)["look"] == "nuit_cosy"
+
+
+# --- Bonhomme bâton, petit pull, ombrage, nouvelles expressions ----------------------------------------
+
+def test_corps_et_expressions_nouvelles():
+    stick = puppet.PRESETS["classic_stick"][1]
+    cozy = puppet.PRESETS["cozy_beige"][1]
+    base = puppet.draw_puppet(puppet.PuppetDesign(), "neutral", display_height=300).tobytes()
+    a = puppet.draw_puppet(stick, "neutral", display_height=300)
+    b = puppet.draw_puppet(cozy, "neutral", display_height=300)
+    assert a.height == b.height == 300 and a.tobytes() != b.tobytes() != base            # trois corps distincts
+    for design in (stick, cozy):
+        shots = {e: puppet.draw_puppet(design, e, display_height=300).tobytes() for e in ("neutral", "tired", "relaxed")}
+        assert len(set(shots.values())) == 3                                              # fatigué / détendu ≠ neutre
+
+
+def test_ombrage_joues_et_trait():
+    plain = puppet.PuppetDesign(body="stick", hat="none")
+    shaded = puppet.PuppetDesign(body="stick", hat="none", shading=True, blush=True)
+    thick = puppet.PuppetDesign(body="stick", hat="none", line_scale=1.8)
+    imgs = [puppet.draw_puppet(d, "neutral", display_height=300).tobytes() for d in (plain, shaded, thick)]
+    assert len(set(imgs)) == 3
+
+
+def test_ancien_personnage_toujours_lisible():
+    """Les personnages enregistrés avant l'ajout des corps ne contiennent pas les nouveaux champs."""
+    d = puppet.PuppetDesign.from_json('{"skin": "#aabbcc", "hat": "cap"}')
+    assert d.body == "dressed" and d.outline == puppet.DEFAULT_OUTLINE and d.line_scale == 1.0
+    assert puppet.PuppetDesign.from_json('{"body": "inconnu", "line_scale": "abc"}').body == "dressed"
+    assert puppet.PuppetDesign.from_json('{"line_scale": 99}').line_scale == 2.0
+    assert puppet.PuppetDesign.from_json("[1, 2]") == puppet.PuppetDesign()
+
+
+def test_description_ia_selon_le_corps():
+    stick = puppet.describe_design(puppet.PRESETS["classic_stick"][1])
+    cozy = puppet.describe_design(puppet.PRESETS["cozy_beige"][1])
+    assert "stick-figure body" in stick and "navy blue" in stick and "no clothes" in stick
+    assert "sweater" in cozy and "cream" in cozy
+
+
+def test_emotions_de_la_marionnette_dans_le_plan():
+    data = [{"visual": "a", "emotion": "tired", "label": "", "type": "puppet"}]
+    plans, _ = plan_scenes(["x"], "t", "puppet_2d", client=FakeGroq(json.dumps(data)))
+    assert plans[0]["emotion"] == "tired"                                                # accepté pour la marionnette
+    plans, _ = plan_scenes(["x"], "t", "game_3d", client=FakeGroq(json.dumps(data)))
+    assert plans[0]["emotion"] == "neutral"                                              # pas pour les sprites IA
+
+
+def test_bras_leve_ne_touche_pas_la_tete():
+    import math
+    head_c, head_r = (300 * puppet.SS, 250 * puppet.SS), 195 * puppet.SS
+    for shoulder in ((395, 480), (300, 500), (388, 500)):                       # habillé, bonhomme bâton, petit pull
+        _, _, hand = puppet._arm_points(1.0, puppet.SS, shoulder)
+        assert math.dist(hand, head_c) > head_r + 20 * puppet.SS, shoulder
+    _, elbow, hand = puppet._arm_points(0.0, puppet.SS, (395, 480))            # au repos : bras tendu vers le bas
+    assert hand[1] > elbow[1] > 480 * puppet.SS

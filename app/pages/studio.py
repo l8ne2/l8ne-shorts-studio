@@ -5,9 +5,9 @@ import streamlit as st
 from core import character_studio, illustrator
 from core.character_studio import CutoutError
 from core.config import ROOT
-from core.puppet import HATS, PuppetDesign, draw_puppet
+from core.puppet import BODIES, HATS, PRESETS, PuppetDesign, draw_puppet
 from core.image_generator import ImageGenerationError, generate_image
-from core.styles import EMOTION_LABELS, EMOTIONS, STYLES, get_style
+from core.styles import EMOTION_LABELS, PUPPET_EMOTIONS, EMOTIONS, STYLES, get_style
 from database.db import (
     create_character, get_character, list_characters, list_expressions, set_expression, update_character,
 )
@@ -54,23 +54,49 @@ char_dir = ROOT / "media" / "characters" / str(selected_id)
 if style["composition"] == "puppet":
     design = PuppetDesign.from_json(character["description"])
     k = f"_{selected_id}"
+    BODY_LABELS = {"dressed": "Habillé (soldat, uniforme...)", "stick": "Bonhomme bâton", "cozy": "Petit pull mignon"}
+
+    def apply_preset(name: str) -> None:
+        """Remplit les champs ci-dessous avec un modèle (exécuté avant l'affichage des champs)."""
+        d = PRESETS[name][1]
+        values = {"body": d.body, "skin": d.skin, "outfit": d.outfit, "pants": d.pants, "hatc": d.hat_color,
+                  "hair": d.hair, "hat": d.hat, "belt": d.belt, "outline": d.outline, "lines": d.line_scale,
+                  "shade": d.shading, "blush": d.blush}
+        for key, value in values.items():
+            st.session_state[key + k] = value
+
     st.subheader("Dessine ton personnage")
+    st.caption("Modèles de départ (tu peux ensuite tout modifier) :")
+    for col, (name, (label, _)) in zip(st.columns(len(PRESETS)), PRESETS.items()):
+        col.button(label, key=f"preset_{name}{k}", on_click=apply_preset, args=(name,))
     name_in = st.text_input("Nom", character["name"], key="pname" + k)
-    c1, c2, c3, c4, c5 = st.columns(5)
-    skin = c1.color_picker("Peau", design.skin, key="skin" + k)
-    outfit = c2.color_picker("Haut", design.outfit, key="outfit" + k)
-    pants = c3.color_picker("Pantalon / ceinture", design.pants, key="pants" + k)
-    hat_color = c4.color_picker("Chapeau", design.hat_color, key="hatc" + k)
-    hair = c5.color_picker("Cheveux", design.hair, key="hair" + k)
-    h1, h2 = st.columns(2)
-    hat = h1.selectbox("Coiffure / chapeau", HATS, index=HATS.index(design.hat) if design.hat in HATS else 0,
+    # valeurs de départ posées une seule fois dans l'état de la page (les modèles peuvent ensuite les remplacer)
+    for key, value in {"body": design.body, "skin": design.skin, "outfit": design.outfit, "pants": design.pants,
+                       "hatc": design.hat_color, "hair": design.hair, "outline": design.outline, "hat": design.hat,
+                       "belt": design.belt, "shade": design.shading, "blush": design.blush,
+                       "lines": float(design.line_scale)}.items():
+        st.session_state.setdefault(key + k, value)
+    body = st.selectbox("Corps", BODIES, format_func=lambda b: BODY_LABELS[b], key="body" + k)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    skin = c1.color_picker("Tête / peau", key="skin" + k)
+    outfit = c2.color_picker("Haut", key="outfit" + k)
+    pants = c3.color_picker("Pantalon", key="pants" + k)
+    hat_color = c4.color_picker("Chapeau", key="hatc" + k)
+    hair = c5.color_picker("Cheveux", key="hair" + k)
+    outline = c6.color_picker("Contour", key="outline" + k)
+    h1, h2, h3, h4, h5 = st.columns(5)
+    hat = h1.selectbox("Coiffure / chapeau", HATS,
                        format_func=lambda x: {"none": "Aucun", "cap": "Casquette", "beanie": "Bonnet",
                                               "helmet": "Casque", "hair": "Cheveux"}[x], key="hat" + k)
-    belt = h2.checkbox("Ceinture", design.belt, key="belt" + k)
-    new_design = PuppetDesign(skin=skin, outfit=outfit, pants=pants, hat=hat, hat_color=hat_color, hair=hair, belt=belt)
+    belt = h2.checkbox("Ceinture (habillé)", key="belt" + k)
+    shading = h3.checkbox("Ombrage doux", key="shade" + k)
+    blush = h4.checkbox("Joues roses", key="blush" + k)
+    lines = h5.slider("Épaisseur du trait", 0.6, 1.8, step=0.05, key="lines" + k)
+    new_design = PuppetDesign(skin=skin, outfit=outfit, pants=pants, hat=hat, hat_color=hat_color, hair=hair,
+                              belt=belt, body=body, outline=outline, line_scale=lines, shading=shading, blush=blush)
     st.caption("Aperçu des expressions (la bouche s'ouvrira au rythme de la voix dans la vidéo) :")
-    shots = [(draw_puppet(new_design, e, display_height=300), EMOTION_LABELS[e]) for e in EMOTIONS]
-    shots.append((draw_puppet(new_design, "happy", mouth=2, arm_raise=1.0, display_height=300), "Parle"))
+    shots = [(draw_puppet(new_design, e, display_height=260), EMOTION_LABELS[e]) for e in PUPPET_EMOTIONS]
+    shots.append((draw_puppet(new_design, "happy", mouth=2, arm_raise=1.0, display_height=260), "Parle"))
     for col, (img, label) in zip(st.columns(len(shots)), shots):
         col.image(img, caption=label)
     if st.button("💾 Enregistrer le personnage"):

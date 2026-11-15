@@ -9,7 +9,7 @@ from core.image_generator import ImageGenerationError
 from core.looks import resolve_look
 from core.puppet import PuppetDesign, describe_design
 from core.scene_planner import plan_scenes
-from core.styles import EMOTION_LABELS, EMOTIONS, get_style
+from core.styles import EMOTION_LABELS, EMOTIONS, PUPPET_EMOTIONS, get_style
 from core.visual_finder import split_scenes
 from database.db import get_character, list_expressions, replace_asset, set_status
 
@@ -95,7 +95,7 @@ def render_illustrations(project, script: str, cfg: dict) -> None:
                              format_func=lambda t: SCENE_TYPES[t])
             c1, c2 = st.columns(2)
             if emotion_mode and scene_type(i) == "puppet":
-                c1.selectbox("Expression", EMOTIONS, key=f"emotion_{pid}_{i}",
+                c1.selectbox("Expression", PUPPET_EMOTIONS if puppet_mode else EMOTIONS, key=f"emotion_{pid}_{i}",
                              format_func=lambda e: EMOTION_LABELS[e])
             c2.text_input("Texte à l'écran (facultatif)", key=f"label_{pid}_{i}")
             if i in images and images[i].get("type") != scene_type(i):

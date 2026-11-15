@@ -2,21 +2,21 @@
 import json
 import re
 
-from core.styles import EMOTIONS, get_style
+from core.styles import EMOTIONS, PUPPET_EMOTIONS, get_style
 
 
 def _fallback(scenes: list, topic: str) -> list:
     return [{"visual": topic, "emotion": "neutral", "label": "", "type": "puppet"} for _ in scenes]
 
 
-def _clean(item: dict) -> dict:
+def _clean(item: dict, allowed=EMOTIONS) -> dict:
     visual = str(item.get("visual", "")).strip()
     emotion = str(item.get("emotion", "neutral")).strip().lower()
     label = str(item.get("label", "") or "").strip()
     if len(label.split()) > 3:
         label = ""
     scene_type = str(item.get("type", "puppet")).strip().lower()
-    return {"visual": visual, "emotion": emotion if emotion in EMOTIONS else "neutral", "label": label,
+    return {"visual": visual, "emotion": emotion if emotion in allowed else "neutral", "label": label,
             "type": scene_type if scene_type in ("puppet", "illustration") else "puppet"}
 
 
@@ -24,6 +24,7 @@ def plan_scenes(scenes: list, topic: str, style_key: str, character_description:
                 client=None, language: str = "fr"):
     """Retourne (plans, fallback_utilisé) : un dict {visual, emotion, label} par scène."""
     style = get_style(style_key)
+    allowed = PUPPET_EMOTIONS if style["composition"] == "puppet" else EMOTIONS
     try:
         if client is None:
             import os
@@ -49,7 +50,7 @@ def plan_scenes(scenes: list, topic: str, style_key: str, character_description:
             f"Pour chacune des {len(scenes)} scènes, donne un objet JSON avec :\n"
             f'- "visual" : une phrase EN ANGLAIS (max 25 mots) décrivant ce qu\'on voit, concrète et '
             f"dessinable, sans texte écrit dans l'image. {sprite_rule}\n"
-            f'- "emotion" : une valeur parmi {", ".join(EMOTIONS)} (émotion du personnage pendant la scène)\n'
+            f'- "emotion" : une valeur parmi {", ".join(allowed)} (émotion du personnage pendant la scène)\n'
             f'- "label" : texte court à afficher à l\'écran (3 mots maximum, langue "{language}") : nom de '
             f'l\'élément montré, mot-clé fort ou chronomètre, ou "" si inutile.\n'
             + ('- "type" : "puppet" (le personnage dessiné parle devant le décor) ou "illustration" (moment '
@@ -62,7 +63,7 @@ def plan_scenes(scenes: list, topic: str, style_key: str, character_description:
                             temperature=0.5)
         data = json.loads(re.sub(r"```(?:json)?", "", content).strip())
         if isinstance(data, list) and len(data) == len(scenes) and all(isinstance(d, dict) for d in data):
-            plans = [_clean(d) for d in data]
+            plans = [_clean(d, allowed) for d in data]
             if all(p["visual"] for p in plans):
                 return plans, False
     except Exception:
