@@ -19,6 +19,7 @@ STYLES = {
                    "max_words": 3, "max_chars": 16},
 }
 DEFAULT_STYLE = "modernes"
+SECOND_SPEAKER_COLOR = r"{\c&H00F5C77A&}"  # couleur ASS (BGR) : bleu clair
 
 
 class SubtitleError(Exception):
@@ -48,7 +49,8 @@ def _expand_sentences(words: list) -> list:
         step = (item["end"] - item["start"]) / len(tokens)
         for i, tok in enumerate(tokens):
             expanded.append({"text": tok, "start": item["start"] + i * step,
-                             "end": item["start"] + (i + 1) * step})
+                             "end": item["start"] + (i + 1) * step,
+                             **({"speaker": item["speaker"]} if "speaker" in item else {})})
     return expanded
 
 
@@ -63,12 +65,15 @@ def words_to_cues(words: list, max_words: int = 4, max_chars: int = 28, pause: f
 
     def flush():
         if current:
-            cues.append({"start": current[0]["start"], "end": current[-1]["end"],
-                         "text": " ".join(w["text"] for w in current)})
+            cue = {"start": current[0]["start"], "end": current[-1]["end"],
+                   "text": " ".join(w["text"] for w in current)}
+            if current[0].get("speaker") is not None:
+                cue["speaker"] = current[0]["speaker"]
+            cues.append(cue)
             current.clear()
 
     for w in words:
-        if current and w["start"] - current[-1]["end"] > pause:
+        if current and (w["start"] - current[-1]["end"] > pause or w.get("speaker") != current[-1].get("speaker")):
             flush()
         current.append(w)
         text_len = len(" ".join(x["text"] for x in current))
@@ -124,6 +129,8 @@ def to_ass(cues: list, style_name: str = DEFAULT_STYLE, labels: list = None) -> 
         text = re.sub(r"[{}]", "", c["text"]).replace("\n", " ")
         if st["uppercase"]:
             text = text.upper()
+        if c.get("speaker") == 1:  # 2e personnage : bleu clair, pour distinguer qui parle
+            text = SECOND_SPEAKER_COLOR + text
         lines.append(f"Dialogue: 0,{_ass_time(c['start'])},{_ass_time(c['end'])},Default,,0,0,0,,{text}")
     for lab in labels or []:
         text = re.sub(r"[{}]", "", lab["text"]).replace("\n", " ")

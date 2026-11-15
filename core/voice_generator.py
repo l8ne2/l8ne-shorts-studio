@@ -139,3 +139,73 @@ def generate_voice(text: str, channel_cfg: dict, project_id: int, audio_dir=None
     words_path.write_text(json.dumps(words, ensure_ascii=False, indent=1), encoding="utf-8")
     duration = max((w["end"] for w in words), default=None)
     return {"audio_path": audio_path, "words_path": words_path, "duration": duration, "voice": voice}
+
+
+def generate_dialogue_voice(lines: list, speakers: list, project_id: int, rate: str = "+0%", audio_dir=None,
+                            gap: float = 0.18, pause_cap: float = 0.22, communicate_cls=None,
+                            ffmpeg: str = None, runner=subprocess.run) -> dict:
+    """Génère la voix d'un dialogue : une voix par personnage, réplique par réplique, puis assemblage.
+
+    lines : [(index_du_personnage, réplique)] ; speakers : [{'name', 'voice', ...}, ...].
+    Écrit project_<id>.mp3, project_<id>.words.json (mots horodatés + personnage) et
+    project_<id>.segments.json (qui parle de quand à quand). Retourne un dict avec les chemins.
+    """
+    from core.video_editor import probe_duration  # import tardif : évite une dépendance circulaire
+
+    if not lines:
+        raise VoiceGenerationError("Le dialogue est vide.")
+    ffmpeg = ffmpeg or shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise VoiceGenerationError("FFmpeg est nécessaire pour assembler les voix du dialogue.")
+    if communicate_cls is None:
+        import edge_tts
+
+        communicate_cls = edge_tts.Communicate
+
+    audio_dir = Path(audio_dir or AUDIO_DIR)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    seg_files, segments, all_words = [], [], []
+    offset = 0.0
+    try:
+        for i, (spk, text) in enumerate(lines):
+            voice = speakers[spk].get("voice") or DEFAULT_VOICE
+            seg_path = audio_dir / f"project_{project_id}_seg{i}.mp3"
+            seg_files.append(seg_path)
+            try:
+                words, size = asyncio.run(_synthesize(text, voice, rate, seg_path, communicate_cls))
+            except Exception as exc:
+                raise VoiceGenerationError(f"Edge TTS a échoué (réplique {i + 1}, voix {voice}) : {exc}") from exc
+            if size == 0:
+                raise VoiceGenerationError(f"Aucun audio reçu pour la réplique {i + 1}.")
+            words, _ = tighten_pauses(seg_path, words, cap=pause_cap, ffmpeg=ffmpeg, runner=runner)
+            duration = probe_duration(seg_path, runner=runner) or (max((w["end"] for w in words), default=0.5) + 0.1)
+            all_words += [{**w, "start": round(w["start"] + offset, 3), "end": round(w["end"] + offset, 3),
+                           "speaker": spk} for w in words]
+            segments.append({"speaker": spk, "text": text, "start": round(offset, 3),
+                             "end": round(offset + duration, 3)})
+            offset += duration + gap
+        # assemblage : on ajoute `gap` secondes de silence après chaque réplique (sauf la dernière)
+        inputs = [arg for f in seg_files for arg in ("-i", str(f))]
+        parts = [f"[{i}:a]apad=pad_dur={gap}[a{i}]" if i < len(seg_files) - 1 else f"[{i}:a]anull[a{i}]"
+                 for i in range(len(seg_files))]
+        graph = ";".join(parts) + ";" + "".join(f"[a{i}]" for i in range(len(seg_files))) + \
+            f"concat=n={len(seg_files)}:v=0:a=1[out]"
+        audio_path = audio_dir / f"project_{project_id}.mp3"
+        tmp = audio_path.with_name(audio_path.stem + ".dlg.mp3")
+        result = runner([ffmpeg, "-y", "-loglevel", "error", *inputs, "-filter_complex", graph, "-map", "[out]",
+                         "-c:a", "libmp3lame", "-q:a", "3", str(tmp)],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0 or not tmp.exists():
+            tmp.unlink(missing_ok=True)
+            raise VoiceGenerationError(f"Assemblage des voix impossible : {(result.stderr or '')[-300:]}")
+        os.replace(tmp, audio_path)
+    finally:
+        for f in seg_files:
+            f.unlink(missing_ok=True)
+
+    words_path = audio_dir / f"project_{project_id}.words.json"
+    segments_path = audio_dir / f"project_{project_id}.segments.json"
+    words_path.write_text(json.dumps(all_words, ensure_ascii=False, indent=1), encoding="utf-8")
+    segments_path.write_text(json.dumps(segments, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"audio_path": audio_path, "words_path": words_path, "segments_path": segments_path,
+            "duration": segments[-1]["end"], "segments": segments}

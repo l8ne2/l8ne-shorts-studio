@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 
 from core.config import ROOT, load_channel
+from core import dialogue
 from core.animator import SceneSpec, render_scene
 from core.looks import resolve_look
 from core.lipsync import audio_envelope, gesture_levels, mouth_levels
@@ -34,7 +35,16 @@ def missing_steps(project_id: int, db_path=None) -> list:
     """Étapes à terminer avant le montage (liste vide = prêt)."""
     labels = {"audio": "voix off", "timings": "voix off (horodatage)", "scenes": "visuels",
               "subtitles_ass": "sous-titres"}
-    return [label for key, label in labels.items() if not _asset_path(project_id, key, db_path)]
+    missing = [label for key, label in labels.items() if not _asset_path(project_id, key, db_path)]
+    if dialogue.load_config(project_id, db_path) and not _asset_path(project_id, "segments", db_path):
+        missing.append("voix off du dialogue (régénère la voix)")
+    return missing
+
+
+def load_segments(project_id: int, db_path=None):
+    """Répliques horodatées d'un projet en dialogue (qui parle de quand à quand), sinon None."""
+    path = _asset_path(project_id, "segments", db_path)
+    return json.loads(path.read_text(encoding="utf-8")) if path else None
 
 
 def _scene_labels(plan: list, durations: list) -> list:
@@ -50,7 +60,7 @@ def _scene_labels(plan: list, durations: list) -> list:
     return labels
 
 
-def _prepare_clips(plan: list, durations: list, audio, out: Path, ffmpeg: str = None):
+def _prepare_clips(plan: list, durations: list, audio, out: Path, ffmpeg: str = None, timeline: list = None):
     """Rend les scènes animées (personnage qui parle) ; les autres scènes gardent leur fichier d'origine."""
     animated = [i for i, e in enumerate(plan) if e.get("animation")]
     if not animated:
@@ -63,10 +73,16 @@ def _prepare_clips(plan: list, durations: list, audio, out: Path, ffmpeg: str = 
     clips, start = [], 0.0
     for i, (entry, dur) in enumerate(zip(plan, durations)):
         anim = entry.get("animation")
-        if anim:
+        if anim and anim["type"] == "dialogue":
+            if not timeline:
+                raise dialogue.DialogueError("Répliques introuvables : régénère la voix du dialogue.")
+            spec = SceneSpec(background=entry["file"], duration=dur, start_time=start, index=i,
+                             characters=anim["characters"], timeline=timeline)
+        elif anim:
             spec = SceneSpec(background=entry["file"], duration=dur, start_time=start, index=i,
                              emotion=entry.get("emotion", "neutral"), kind=anim["type"],
                              design=anim.get("design") or {}, sprite=entry.get("sprite"))
+        if anim:
             clips.append(str(render_scene(spec, mouths, gestures, anim_dir / f"scene_{i + 1}.mp4", ffmpeg)))
         else:
             clips.append(entry["file"])
@@ -113,7 +129,11 @@ def render_project(project_id: int, framing: str = "crop", db_path=None, output_
         db.set_status(project_id, "RENDERING", db_path=db_path)
     try:
         audio_duration = editor_kwargs.pop("audio_duration", None) or probe_duration(audio)
-        durations = compute_scene_durations([s["text"] for s in plan], words, audio_duration)
+        timeline = load_segments(project_id, db_path)
+        if timeline and all(e.get("segments") for e in plan):   # dialogue : scènes calées sur les répliques
+            durations = dialogue.dialogue_scene_durations(plan, timeline, audio_duration)
+        else:
+            durations = compute_scene_durations([s["text"] for s in plan], words, audio_duration)
         if preview:
             plan, durations = trim_scenes(plan, durations, preview_seconds)
         safe_title = re.sub(r"[^a-zA-Z0-9]+", "_", project["title"]).strip("_").lower() or "short"
@@ -126,7 +146,7 @@ def render_project(project_id: int, framing: str = "crop", db_path=None, output_
         ass_text = to_ass(words_to_cues(words, **cue_params(style_name)), style_name, labels)
         ass = ass.with_name(ass.stem + "_final.ass")
         ass.write_text(ass_text, encoding="utf-8")
-        clips, anim_dir = _prepare_clips(plan, durations, audio, out, editor_kwargs.get("ffmpeg"))
+        clips, anim_dir = _prepare_clips(plan, durations, audio, out, editor_kwargs.get("ffmpeg"), timeline)
         try:
             result = assemble_video(clips, durations, audio, ass, out, framing=framing, grade=look["grade"], **editor_kwargs)
         finally:

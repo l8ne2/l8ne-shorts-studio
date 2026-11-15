@@ -69,3 +69,55 @@ def plan_scenes(scenes: list, topic: str, style_key: str, character_description:
     except Exception:
         pass
     return _fallback(scenes, topic), True
+
+
+def plan_dialogue_scenes(scenes: list, topic: str, speakers: list, client=None, language: str = "fr"):
+    """Plan visuel d'un dialogue. scenes : [{'text', ...}] (répliques regroupées).
+
+    Retourne (plans, repli_utilisé) ; chaque plan : {visual, emotions: [émotion A, émotion B], label, type}.
+    """
+    allowed = PUPPET_EMOTIONS
+
+    def fallback():
+        return [{"visual": topic, "emotions": ["neutral", "neutral"], "label": "", "type": "puppet"} for _ in scenes]
+
+    try:
+        if client is None:
+            import os
+
+            if not os.getenv("GROQ_API_KEY"):
+                return fallback(), True
+            from groq import Groq
+
+            client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        from core.script_generator import call_groq
+
+        numbered = "\n".join(f"{i + 1}. {s['text']}" for i, s in enumerate(scenes))
+        a, b = speakers[0]["name"], speakers[1]["name"]
+        prompt = (
+            f"Sujet de la vidéo : {topic}\nDeux personnages discutent : {a} et {b}.\n\nScènes (extraits du dialogue) :\n"
+            f"{numbered}\n\n"
+            f"Pour chacune des {len(scenes)} scènes, donne un objet JSON avec :\n"
+            '- "visual" : une phrase EN ANGLAIS (max 25 mots) décrivant le LIEU et l\'ambiance, sans personnage '
+            "ni texte écrit dans l'image ;\n"
+            f'- "emotions" : une liste de 2 valeurs [émotion de {a}, émotion de {b}] parmi {", ".join(allowed)} ;\n'
+            f'- "label" : texte court à afficher à l\'écran (3 mots maximum, langue "{language}") ou "" ;\n'
+            '- "type" : "puppet" (les deux personnages dessinés devant le décor) ou "illustration" (moment '
+            "dramatique montré en grand dans une image complète ; 1 scène sur 3 maximum, jamais la première).\n"
+            f"Réponds uniquement avec un tableau JSON de {len(scenes)} objets, sans autre texte."
+        )
+        content = call_groq(client, [{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.5)
+        data = json.loads(re.sub(r"```(?:json)?", "", content).strip())
+        if isinstance(data, list) and len(data) == len(scenes) and all(isinstance(d, dict) for d in data):
+            plans = []
+            for d in data:
+                emos = d.get("emotions") if isinstance(d.get("emotions"), list) else []
+                emos = [str(e).strip().lower() for e in (emos + ["neutral", "neutral"])[:2]]
+                plan = _clean(d, allowed)
+                plan["emotions"] = [e if e in allowed else "neutral" for e in emos]
+                plans.append(plan)
+            if all(p["visual"] for p in plans):
+                return plans, False
+    except Exception:
+        pass
+    return fallback(), True

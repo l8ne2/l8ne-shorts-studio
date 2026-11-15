@@ -4,11 +4,13 @@ from pathlib import Path
 
 import streamlit as st
 
+from core import dialogue as dlg_mod
 from core import illustrator
+from core.pipeline import load_segments
 from core.image_generator import ImageGenerationError
 from core.looks import resolve_look
 from core.puppet import PuppetDesign, describe_design
-from core.scene_planner import plan_scenes
+from core.scene_planner import plan_dialogue_scenes, plan_scenes
 from core.styles import EMOTION_LABELS, EMOTIONS, PUPPET_EMOTIONS, get_style
 from core.visual_finder import split_scenes
 from database.db import get_character, list_expressions, replace_asset, set_status
@@ -31,27 +33,49 @@ def render_illustrations(project, script: str, cfg: dict) -> None:
         return
 
     look = resolve_look(project.get("look"), cfg)
-    st.caption(f"Style : {style['label']} · Ambiance : {look['label']}" + (f" · Personnage : {character['name']}" if character else ""))
+    dlg = dlg_mod.load_config(pid) if puppet_mode else None          # projet en dialogue ? (2 personnages)
+    speaker_chars = [get_character(sp["character_id"]) for sp in dlg["speakers"]] if dlg else []
+    if dlg and (len(speaker_chars) < 2 or any(c is None for c in speaker_chars)):
+        st.warning("Un des personnages du dialogue est introuvable : recrée le projet avec deux personnages.")
+        return
+    st.caption(f"Style : {style['label']} · Ambiance : {look['label']}" + (f" · Personnage : {character['name']}" if character and not dlg else "")
+               + (f" · Dialogue : {' et '.join(c['name'] for c in speaker_chars)}" if dlg else ""))
     if sprite_mode and not any(Path(p).exists() for p in expressions.values()):
         st.warning("Ce style utilise un personnage découpé : crée ses expressions dans le « Studio personnages ».")
         return
 
     plan_key, img_key = f"plan_{pid}", f"imgs_{pid}"
     if st.button("🧩 Préparer les scènes"):
-        scenes = split_scenes(script)
-        if not scenes:
-            st.error("Le script est vide.")
+        segments = load_segments(pid) if dlg else None
+        if dlg and not segments:
+            st.error("Génère d'abord la voix du dialogue (étape 3) : les scènes suivent les répliques.")
+            scenes = []
+        elif dlg:
+            scenes = dlg_mod.group_segments(segments)
         else:
+            scenes = split_scenes(script)
+            if not scenes:
+                st.error("Le script est vide.")
+        if scenes:
             with st.spinner("Découpage et plan visuel (Groq)..."):
-                plans, fallback = plan_scenes(
-                    scenes, project["topic"] or project["title"], style_key,
-                    character["description"] if character else None,
-                )
-            st.session_state[plan_key] = [{"text": t, **p} for t, p in zip(scenes, plans)]
+                if dlg:
+                    plans, fallback = plan_dialogue_scenes(scenes, project["topic"] or project["title"], dlg["speakers"])
+                    plan_items = [{**sc, **p} for sc, p in zip(scenes, plans)]
+                else:
+                    plans, fallback = plan_scenes(
+                        scenes, project["topic"] or project["title"], style_key,
+                        character["description"] if character else None,
+                    )
+                    plan_items = [{"text": t, **p} for t, p in zip(scenes, plans)]
+            st.session_state[plan_key] = plan_items
             st.session_state[img_key] = {}
             for i, p in enumerate(plans):  # (ré)initialise les champs modifiables
                 st.session_state[f"visual_{pid}_{i}"] = p["visual"]
-                st.session_state[f"emotion_{pid}_{i}"] = p["emotion"]
+                if dlg:
+                    for j in (0, 1):
+                        st.session_state[f"emotion_{pid}_{i}_{j}"] = p["emotions"][j]
+                else:
+                    st.session_state[f"emotion_{pid}_{i}"] = p["emotion"]
                 st.session_state[f"label_{pid}_{i}"] = p["label"]
                 st.session_state[f"type_{pid}_{i}"] = p.get("type", "puppet")
             if fallback:
@@ -67,7 +91,11 @@ def render_illustrations(project, script: str, cfg: dict) -> None:
 
     def generate(i: int, attempt: int = 0) -> bool:
         full = puppet_mode and scene_type(i) == "illustration"
-        if full:  # le personnage est dessiné dans l'image : on décrit sa tenue à l'IA
+        if full and dlg:  # les deux personnages sont dessinés dans l'image
+            description = ("two characters side by side: first, "
+                           + describe_design(PuppetDesign.from_json(speaker_chars[0]["description"]))
+                           + "; second, " + describe_design(PuppetDesign.from_json(speaker_chars[1]["description"])))
+        elif full:  # le personnage est dessiné dans l'image : on décrit sa tenue à l'IA
             description = describe_design(PuppetDesign.from_json(character["description"]))
         else:
             description = character["description"] if character and not (sprite_mode or puppet_mode) else None
@@ -93,11 +121,18 @@ def render_illustrations(project, script: str, cfg: dict) -> None:
             if puppet_mode:
                 st.selectbox("Type de scène", list(SCENE_TYPES), key=f"type_{pid}_{i}",
                              format_func=lambda t: SCENE_TYPES[t])
-            c1, c2 = st.columns(2)
-            if emotion_mode and scene_type(i) == "puppet":
-                c1.selectbox("Expression", PUPPET_EMOTIONS if puppet_mode else EMOTIONS, key=f"emotion_{pid}_{i}",
-                             format_func=lambda e: EMOTION_LABELS[e])
-            c2.text_input("Texte à l'écran (facultatif)", key=f"label_{pid}_{i}")
+            if dlg:
+                if scene_type(i) == "puppet":
+                    for j, col in enumerate(st.columns(2)):
+                        col.selectbox(f"Expression de {speaker_chars[j]['name']}", PUPPET_EMOTIONS,
+                                      key=f"emotion_{pid}_{i}_{j}", format_func=lambda e: EMOTION_LABELS[e])
+                st.text_input("Texte à l'écran (facultatif)", key=f"label_{pid}_{i}")
+            else:
+                c1, c2 = st.columns(2)
+                if emotion_mode and scene_type(i) == "puppet":
+                    c1.selectbox("Expression", PUPPET_EMOTIONS if puppet_mode else EMOTIONS, key=f"emotion_{pid}_{i}",
+                                 format_func=lambda e: EMOTION_LABELS[e])
+                c2.text_input("Texte à l'écran (facultatif)", key=f"label_{pid}_{i}")
             if i in images and images[i].get("type") != scene_type(i):
                 st.caption("⚠️ Type de scène modifié : clique sur « Autre variante » pour régénérer l'image.")
             if i in images and st.button("🔄 Autre variante", key=f"regen_{pid}_{i}"):
@@ -125,12 +160,20 @@ def render_illustrations(project, script: str, cfg: dict) -> None:
                        "label": st.session_state.get(f"label_{pid}_{i}", "")}
             sprite = illustrator.pick_sprite(expressions, current["emotion"]) if sprite_mode else None
             animation = None
-            if puppet_mode and scene_type(i) == "puppet":
+            if dlg:
+                emos = [st.session_state.get(f"emotion_{pid}_{i}_{j}", "neutral") for j in (0, 1)]
+                current["emotion"] = emos[0]
+                if scene_type(i) == "puppet":
+                    animation = {"type": "dialogue", "characters": [
+                        {"design": json.loads(c["description"] or "{}"), "emotion": e}
+                        for c, e in zip(speaker_chars, emos)]}
+            elif puppet_mode and scene_type(i) == "puppet":
                 animation = {"type": "puppet", "design": json.loads(character["description"] or "{}")}
             elif sprite:
                 animation = {"type": "sprite"}
             entries.append(illustrator.build_entry(i, scene["text"], current, images[i]["path"], sprite,
-                                                   images[i]["attempt"], animation))
+                                                   images[i]["attempt"], animation,
+                                                   segments=scene.get("segments") if dlg else None))
         plan_path = illustrator.save_plan(entries, illustrator.IMAGES_DIR / f"project_{pid}" / "scenes.json")
         replace_asset(pid, "scenes", plan_path, source="flux-schnell")
         set_status(pid, "ASSETS_READY")

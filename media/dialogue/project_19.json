@@ -1,0 +1,16 @@
+{
+ "speakers": [
+  {
+   "name": "MAX",
+   "character_id": 11,
+   "voice": "fr-FR-HenriNeural",
+   "role": "le curieux : il pose les questions et réagit avec surprise"
+  },
+  {
+   "name": "LEA",
+   "character_id": 12,
+   "voice": "fr-FR-DeniseNeural",
+   "role": "celui qui explique : il répond avec humour et des exemples simples"
+  }
+ ]
+}

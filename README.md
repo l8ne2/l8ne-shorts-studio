@@ -14,6 +14,7 @@ Aucune vidéo n'est publiée automatiquement : tu vérifies les faits, les droit
 - [x] Phase 2 — Moteur de génération : Groq (scripts), Edge TTS (voix), Pixabay/Pexels (visuels de stock), sous-titres
 - [x] Phase 3 — Montage FFmpeg, prévisualisation, export MP4
 - [x] Styles animés : dessin animé 2D, personnage 3D coloré, explication 3D en coupe (images IA via Cloudflare Workers AI) et studio de personnages
+- [x] Mode dialogue : deux personnages, deux voix, seul celui qui parle ouvre la bouche
 - [ ] Tests sur les trois chaînes et version 1.0
 
 ## Installation (Windows)

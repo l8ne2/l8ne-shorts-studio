@@ -9,8 +9,9 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
+from core.dialogue import speaker_at
 from core.puppet import PuppetDesign, draw_puppet
 
 W, H, FPS = 1080, 1920, 30
@@ -35,6 +36,10 @@ class SceneSpec:
     sprite: str = None
     char_height: int = 1000
     bottom_margin: int = 300
+    # Dialogue : deux personnages [{"design": {...}, "emotion": "happy"}, ...] et qui parle quand
+    # ([{"speaker": 0, "start": 0.0, "end": 2.1}, ...], en secondes de l'audio complet)
+    characters: list = None
+    timeline: list = None
 
 
 def ease_out_back(x: float) -> float:
@@ -94,10 +99,92 @@ def _shadow(width: int) -> Image.Image:
     return sh
 
 
+DIALOGUE_HEIGHT = 820
+DIALOGUE_X = (300, 780)      # position horizontale des deux personnages
+
+
+class _DialoguePoses:
+    """Poses d'un personnage du dialogue (le 2e est retourné pour regarder vers le 1er)."""
+
+    def __init__(self, character: dict, mirrored: bool, height: int):
+        self.design = PuppetDesign(**{k: v for k, v in (character.get("design") or {}).items()
+                                      if k in PuppetDesign.__dataclass_fields__})
+        self.emotion, self.mirrored, self.height, self.cache = character.get("emotion", "neutral"), mirrored, height, {}
+
+    def get(self, mouth: int, blink: bool, arm: int):
+        key = (mouth, blink, arm)
+        if key not in self.cache:
+            img = draw_puppet(self.design, self.emotion, mouth=mouth, blink=blink, arm_raise=arm / 2,
+                              display_height=self.height)
+            self.cache[key] = ImageOps.mirror(img) if self.mirrored else img
+        return self.cache[key]
+
+
+def _render_dialogue(spec: SceneSpec, mouth_levels: list, gestures: list, out_path: Path, ffmpeg: str,
+                     progress=None) -> Path:
+    """Scène à deux personnages : seul celui qui parle ouvre la bouche et gesticule ; l'autre écoute."""
+    bg = Image.open(spec.background).convert("RGB")
+    if bg.size != (W, H):
+        bg = bg.resize((W, H), Image.LANCZOS)
+    chars = [_DialoguePoses(c, mirrored=(i == 1), height=DIALOGUE_HEIGHT) for i, c in enumerate(spec.characters[:2])]
+    impact = next((c.emotion for c in chars if c.emotion in IMPACT_EMOTIONS), "neutral")
+    frames = max(2, round(spec.duration * FPS))
+    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+           "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "ultrafast",
+           "-crf", "17", "-pix_fmt", "yuv420p", str(out_path)]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    shadow = _shadow(int(DIALOGUE_HEIGHT * 0.55))
+    emph = [1.0, 1.0]
+    try:
+        for f in range(frames):
+            t = f / FPS
+            gt = spec.start_time + t
+            g = min(round(gt * FPS), max(len(mouth_levels) - 1, 0))
+            active = speaker_at(spec.timeline, gt)
+            frame = bg.transform((W, H), Image.EXTENT, camera_box(spec.index, t, spec.duration, impact), Image.BILINEAR)
+            order = sorted(range(len(chars)), key=lambda i: i == active)   # celui qui parle est dessiné devant
+            for i in order:
+                is_active = i == active
+                mouth = (mouth_levels[g] if mouth_levels else 0) if is_active else 0
+                arm = (gestures[g] if gestures else 0) if is_active else 0
+                blinking = ((t + i * 1.3 + spec.index * 0.9) % 3.2) < 0.12
+                pose = chars[i].get(mouth, blinking, arm)
+                emph[i] += ((1.06 if is_active else 0.97) - emph[i]) * 0.25   # le locuteur grandit un peu
+                pop = max(ease_out_back(min(max(t - 0.15 * i, 0.0) / POP_SECONDS, 1.0)), 0.01)
+                squash = 1 + 0.025 * mouth * math.sin(t * 25)
+                sx, sy = pop * emph[i] / squash, pop * emph[i] * squash
+                img = pose.resize((max(1, round(pose.width * sx)), max(1, round(pose.height * sy))), Image.BILINEAR)
+                img = img.rotate((2.2 if is_active else 1.2) * math.sin(2 * math.pi * 0.7 * t + spec.index + i),
+                                 resample=Image.BICUBIC, expand=True)
+                hop = -8 * (mouth >= 2) - 4 * abs(math.sin(2 * math.pi * 1.1 * t + i))
+                bottom = H - spec.bottom_margin + hop
+                cx = DIALOGUE_X[i]
+                frame.paste(shadow, (cx - shadow.width // 2, round(H - spec.bottom_margin - 24)), shadow)
+                frame.paste(img, (round(cx - img.width / 2), round(bottom - img.height)), img)
+            try:
+                proc.stdin.write(frame.tobytes())
+            except BrokenPipeError:
+                break
+            if progress and f % 15 == 0:
+                progress(f / frames)
+        proc.stdin.close()
+        err = proc.stderr.read().decode("utf-8", "replace")
+        if proc.wait() != 0:
+            raise AnimationError(f"FFmpeg a échoué : {err[-400:]}")
+    except Exception:
+        proc.kill()
+        out_path.unlink(missing_ok=True)
+        raise
+    return out_path
+
+
 def render_scene(spec: SceneSpec, mouth_levels: list, gestures: list, out_path, ffmpeg: str = "ffmpeg",
                  progress=None) -> Path:
     """Rend la scène en MP4 muet 1080x1920 à 30 images/s."""
     out_path = Path(out_path)
+    if spec.characters:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        return _render_dialogue(spec, mouth_levels, gestures, out_path, ffmpeg, progress)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     bg = Image.open(spec.background).convert("RGB")
     if bg.size != (W, H):

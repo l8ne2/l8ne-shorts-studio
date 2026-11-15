@@ -7,6 +7,7 @@ from core.script_generator import ScriptGenerationError, check_script, generate_
 from app.components.illustrations import render_illustrations
 from core.pipeline import missing_steps, project_credits, render_project
 from core.publishing_kit import build_kit, checklist, kit_to_text, save_kit
+from core import dialogue as dlg_mod
 from core.looks import AUTO, LOOKS
 from core.script_generator import TONES
 from core.styles import STYLES
@@ -16,7 +17,7 @@ from core.visual_finder import (
     plan_queries, search_videos, split_scenes,
 )
 from core.video_editor import FRAMINGS, VideoEditError
-from core.voice_generator import VoiceGenerationError, generate_voice
+from core.voice_generator import VoiceGenerationError, generate_dialogue_voice, generate_voice
 from database.db import (
     create_project, get_project, list_characters, list_assets, list_channels, list_exports, replace_asset, replace_assets,
     set_status, update_script,
@@ -36,6 +37,21 @@ if STYLES[style_key]["characters"]:
         st.info("Aucun personnage pour ce style : crée-en un dans le « Studio personnages ».")
     character = st.selectbox("Personnage", [None, *available],
                              format_func=lambda c: "Aucun" if c is None else c["name"])
+dialogue_mode, character_b, speaker_setup = False, None, []
+if STYLES[style_key]["composition"] == "puppet":
+    dialogue_mode = st.checkbox("💬 Mode dialogue : deux personnages qui discutent")
+if dialogue_mode:
+    character_b = st.selectbox("Deuxième personnage", [None, *available], key="char_b",
+                               format_func=lambda c: "Aucun" if c is None else c["name"])
+    both = [character, character_b]
+    cols = st.columns(2)
+    for j, (col, ch) in enumerate(zip(cols, both)):
+        with col:
+            st.markdown(f"**{ch['name'] if ch else f'Personnage {j + 1}'}**")
+            voice = st.selectbox("Voix", list(dlg_mod.VOICES), index=list(dlg_mod.VOICES).index(dlg_mod.DEFAULT_VOICES[j]),
+                                 format_func=lambda v: dlg_mod.VOICES[v], key=f"voice_new_{j}")
+            role = st.text_input("Rôle", dlg_mod.DEFAULT_ROLES[j], key=f"role_new_{j}")
+            speaker_setup.append({"voice": voice, "role": role})
 with st.form("new_project"):
     channel_name = st.selectbox("Chaîne", list(by_name))
     title = st.text_input("Titre du projet")
@@ -46,17 +62,29 @@ with st.form("new_project"):
 if submitted:
     if not title.strip():
         st.error("Donne un titre au projet.")
+    elif dialogue_mode and (not character or not character_b):
+        st.error("Choisis les deux personnages du dialogue.")
+    elif dialogue_mode and character["id"] == character_b["id"]:
+        st.error("Choisis deux personnages différents.")
+    elif dialogue_mode and character["name"].strip().casefold() == character_b["name"].strip().casefold():
+        st.error("Les deux personnages doivent avoir des noms différents (le script utilise leurs noms).")
     else:
         st.session_state["project_id"] = create_project(
             by_name[channel_name]["id"], title.strip(), topic.strip(),
             style=style_key, character_id=character["id"] if character else None, look=look_key,
         )
+        if dialogue_mode:
+            dlg_mod.save_config(st.session_state["project_id"], [
+                {"name": ch["name"].strip(), "character_id": ch["id"], **setup}
+                for ch, setup in zip((character, character_b), speaker_setup)])
         st.success("Projet créé.")
 
 project_id = st.session_state.get("project_id")
 if project_id:
     project = get_project(project_id)
     cfg = json.loads(next(c["config"] for c in channels if c["id"] == project["channel_id"]))
+    dlg = dlg_mod.load_config(project_id)                          # None si le projet n'est pas un dialogue
+    names = [sp["name"] for sp in dlg["speakers"]] if dlg else []
     key = f"script_{project_id}"
     if key not in st.session_state:
         st.session_state[key] = project["script"] or ""
@@ -65,8 +93,12 @@ if project_id:
         """Callback : s'exécute avant le rendu, donc peut modifier la zone de texte."""
         current = get_project(project_id)
         try:
-            script = generate_script(current["topic"] or current["title"], cfg,
-                                     tone=st.session_state.get(f"tone_{project_id}"))
+            if dlg:
+                script = dlg_mod.generate_dialogue_script(current["topic"] or current["title"], cfg, dlg["speakers"],
+                                                          tone=st.session_state.get(f"tone_{project_id}"))
+            else:
+                script = generate_script(current["topic"] or current["title"], cfg,
+                                         tone=st.session_state.get(f"tone_{project_id}"))
         except ScriptGenerationError as exc:
             set_status(project_id, current["status"], error=str(exc))
             return
@@ -84,9 +116,18 @@ if project_id:
 
     st.selectbox("Ton du script", list(TONES), key=f"tone_{project_id}", format_func=lambda k: TONES[k][0])
     st.button("🤖 Générer avec Groq", on_click=on_generate)
+    if dlg:
+        st.info("Dialogue : une réplique par ligne, sous la forme « Nom : texte » avec les noms "
+                + " et ".join(f"« {n} »" for n in names) + ".")
     script = st.text_area("Script (modifiable)", key=key, height=250)
-    st.caption(f"{len(script.split())} mots")
-    for w in check_script(script, cfg["duration"]) if script.strip() else []:
+    spoken = script
+    if dlg and script.strip():
+        try:
+            spoken = " ".join(t for _, t in dlg_mod.parse_dialogue(script, names))
+        except dlg_mod.DialogueError as exc:
+            st.warning(str(exc))
+    st.caption(f"{len(spoken.split())} mots")
+    for w in check_script(spoken, cfg["duration"]) if spoken.strip() else []:
         st.warning(w)
 
     c1, c2 = st.columns(2)
@@ -103,7 +144,16 @@ if project_id:
 
     st.subheader("3. Voix off")
     voice_name = cfg.get("voice", {}).get("name", "voix par défaut")
-    st.caption(f"Voix : {voice_name}. Le script enregistré est utilisé pour générer l'audio.")
+    if dlg:
+        st.caption("Une voix par personnage : tu peux les changer avant de générer.")
+        for j, col in enumerate(st.columns(2)):
+            current_voice = dlg["speakers"][j].get("voice") or dlg_mod.DEFAULT_VOICES[j]
+            options = list(dlg_mod.VOICES)
+            col.selectbox(f"Voix de {names[j]}", options,
+                          index=options.index(current_voice) if current_voice in options else 0,
+                          format_func=lambda v: dlg_mod.VOICES.get(v, v), key=f"voice_{project_id}_{j}")
+    else:
+        st.caption(f"Voix : {voice_name}. Le script enregistré est utilisé pour générer l'audio.")
     try:
         default_rate = int(str(cfg.get("voice", {}).get("rate", "+0%")).replace("%", "").replace("+", ""))
     except ValueError:
@@ -118,13 +168,22 @@ if project_id:
             update_script(project_id, script)
             try:
                 with st.spinner("Génération de la voix..."):
-                    result = generate_voice(script, voice_cfg, project_id)
-            except VoiceGenerationError as exc:
+                    if dlg:
+                        lines = dlg_mod.parse_dialogue(script, names)
+                        for j in (0, 1):  # les voix choisies sont conservées pour le projet
+                            dlg["speakers"][j]["voice"] = st.session_state[f"voice_{project_id}_{j}"]
+                        dlg_mod.save_config(project_id, dlg["speakers"])
+                        result = generate_dialogue_voice(lines, dlg["speakers"], project_id, rate=f"{rate:+d}%")
+                    else:
+                        result = generate_voice(script, voice_cfg, project_id)
+            except (VoiceGenerationError, dlg_mod.DialogueError) as exc:
                 set_status(project_id, project["status"], error=str(exc))
                 st.error(str(exc))
             else:
                 replace_asset(project_id, "audio", result["audio_path"], source="edge-tts")
                 replace_asset(project_id, "timings", result["words_path"], source="edge-tts")
+                if dlg:
+                    replace_asset(project_id, "segments", result["segments_path"], source="edge-tts")
                 set_status(project_id, "AUDIO_READY")
                 st.success(f"Voix générée ({result['duration'] or '?'} s). Statut : AUDIO_READY")
 
