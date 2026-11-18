@@ -8,8 +8,9 @@ from core import dialogue as dlg_mod
 from core import illustrator
 from core.pipeline import load_segments
 from core.image_generator import ImageGenerationError
+from core.acting import DEFAULT_INTENSITY, INTENSITIES
 from core.looks import resolve_look
-from core.puppet import PuppetDesign, describe_design
+from core.puppet import PROPS, PuppetDesign, describe_design
 from core.scene_planner import plan_dialogue_scenes, plan_scenes
 from core.styles import EMOTION_LABELS, EMOTIONS, PUPPET_EMOTIONS, get_style
 from core.visual_finder import split_scenes
@@ -17,6 +18,8 @@ from database.db import get_character, list_expressions, replace_asset, set_stat
 
 
 SCENE_TYPES = {"puppet": "Marionnette devant décor", "illustration": "Illustration complète"}
+PROP_LABELS = {"": "Aucun", "phone": "Téléphone", "money": "Argent", "cup": "Tasse", "newspaper": "Journal",
+               "magnifier": "Loupe"}
 
 
 def render_illustrations(project, script: str, cfg: dict) -> None:
@@ -113,6 +116,11 @@ def render_illustrations(project, script: str, cfg: dict) -> None:
             return False
 
     st.markdown("**Scènes** — modifie les descriptions (en anglais) avant de générer.")
+    if puppet_mode:
+        st.selectbox("🎭 Jeu d'acteur", list(INTENSITIES), index=list(INTENSITIES).index(DEFAULT_INTENSITY),
+                     key=f"acting_{pid}", format_func=lambda k: INTENSITIES[k]["label"],
+                     help="Calme : peu de gestes. Naturel : un geste à chaque temps fort. Expressif : gestes, sauts et "
+                          "réactions du visage. Comique : tout est exagéré.")
     for i, scene in enumerate(plan):
         left, right = st.columns([3, 2])
         with left:
@@ -133,6 +141,8 @@ def render_illustrations(project, script: str, cfg: dict) -> None:
                     c1.selectbox("Expression", PUPPET_EMOTIONS if puppet_mode else EMOTIONS, key=f"emotion_{pid}_{i}",
                                  format_func=lambda e: EMOTION_LABELS[e])
                 c2.text_input("Texte à l'écran (facultatif)", key=f"label_{pid}_{i}")
+                if puppet_mode and scene_type(i) == "puppet":
+                    st.selectbox("Objet tenu", list(PROP_LABELS), key=f"prop_{pid}_{i}", format_func=lambda k: PROP_LABELS[k])
             if i in images and images[i].get("type") != scene_type(i):
                 st.caption("⚠️ Type de scène modifié : clique sur « Autre variante » pour régénérer l'image.")
             if i in images and st.button("🔄 Autre variante", key=f"regen_{pid}_{i}"):
@@ -173,7 +183,9 @@ def render_illustrations(project, script: str, cfg: dict) -> None:
                 animation = {"type": "sprite"}
             entries.append(illustrator.build_entry(i, scene["text"], current, images[i]["path"], sprite,
                                                    images[i]["attempt"], animation,
-                                                   segments=scene.get("segments") if dlg else None))
+                                                   segments=scene.get("segments") if dlg else None,
+                                                   acting=st.session_state.get(f"acting_{pid}") if puppet_mode else None,
+                                                   prop=(st.session_state.get(f"prop_{pid}_{i}") or None) if not dlg and puppet_mode and scene_type(i) == "puppet" else None))
         plan_path = illustrator.save_plan(entries, illustrator.IMAGES_DIR / f"project_{pid}" / "scenes.json")
         replace_asset(pid, "scenes", plan_path, source="flux-schnell")
         set_status(pid, "ASSETS_READY")

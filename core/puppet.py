@@ -8,13 +8,17 @@ Tout est dessiné avec Pillow : aucune image IA, aucun quota, rendu instantané.
 import json
 import math
 from dataclasses import asdict, dataclass, fields
+from functools import lru_cache
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 DEFAULT_OUTLINE = "#261b16"
 SS = 2                      # suréchantillonnage pour des contours lisses
-CANVAS = (600, 1000)        # taille de dessin (avant mise à l'échelle)
-HATS = ("none", "cap", "beanie", "helmet", "hair")
+OX, OY = 120, 40            # marge de dessin : laisse la place aux bras tendus (le dessin reste en coordonnées 600x1000)
+CANVAS = (600 + 2 * OX, 1000 + OY)
+CROP_TOP = 40               # zone conservée en hauteur : TOUJOURS la même, pour que le personnage ne « saute »
+                            # pas quand un bras ou la tête bouge
+HATS = ("none", "cap", "beanie", "helmet", "hair", "bowler", "tophat", "miner")
 BODIES = ("dressed", "stick", "cozy")
 MOUTH_LEVELS = 4            # 0 = fermée ... 3 = grande ouverte
 FACE_SCALE = 1.4            # le visage est agrandi : lisible sur un écran de téléphone
@@ -35,6 +39,8 @@ class PuppetDesign:
     line_scale: float = 1.0     # épaisseur des traits (0,7 fin ... 1,8 épais)
     shading: bool = False       # ombrage doux sur la tête
     blush: bool = False         # joues roses
+    moustache: bool = False
+    glasses: bool = False
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -167,11 +173,42 @@ def _hat(d, design, s: int, ol):
         d.pieslice((112 * s, 52 * s, 488 * s, 420 * s), 180, 360, fill=col, outline=ol, width=9 * s)
         d.rectangle((110 * s, 214 * s, 490 * s, 236 * s), fill=col, outline=ol, width=7 * s)
         d.ellipse((cx - 16 * s, 118 * s, cx + 16 * s, 150 * s), fill=(240, 200, 80, 255), outline=ol, width=6 * s)
+    elif design.hat == "bowler":
+        d.pieslice((135 * s, 58 * s, 465 * s, 370 * s), 180, 360, fill=col, outline=ol, width=9 * s)
+        d.ellipse((105 * s, 176 * s, 495 * s, 232 * s), fill=col, outline=ol, width=8 * s)
+        d.rectangle((150 * s, 170 * s, 450 * s, 196 * s), fill=_rgba("#2a2a2a"), outline=ol, width=5 * s)
+    elif design.hat == "tophat":
+        d.rounded_rectangle((200 * s, 52 * s, 400 * s, 205 * s), 14 * s, fill=col, outline=ol, width=9 * s)
+        d.ellipse((120 * s, 182 * s, 480 * s, 236 * s), fill=col, outline=ol, width=8 * s)
+        d.rectangle((201 * s, 168 * s, 399 * s, 192 * s), fill=_rgba("#b8322f"), outline=ol, width=5 * s)
+    elif design.hat == "miner":
+        d.pieslice((112 * s, 52 * s, 488 * s, 420 * s), 180, 360, fill=col, outline=ol, width=9 * s)
+        d.rectangle((104 * s, 212 * s, 496 * s, 238 * s), fill=col, outline=ol, width=7 * s)
+        d.ellipse((cx - 30 * s, 112 * s, cx + 30 * s, 172 * s), fill=(255, 238, 150, 255), outline=ol, width=7 * s)
     elif design.hat == "hair":
         hair = _rgba(design.hair)
         pts = [(140, 200), (130, 120), (190, 150), (230, 60), (290, 130), (350, 50), (400, 140), (470, 110), (460, 200)]
         d.polygon([(x * s, y * s) for x, y in pts], fill=hair, outline=ol)
         d.line([(x * s, y * s) for x, y in pts] + [(140 * s, 200 * s)], fill=ol, width=8 * s, joint="curve")
+
+
+class _Shift:
+    """Décale tout ce qu'on dessine : le dessin est écrit en coordonnées « personnage » (600x1000), sans marge."""
+
+    def __init__(self, draw, dx: int, dy: int):
+        self._d, self._dx, self._dy = draw, dx, dy
+
+    def _move(self, xy):
+        if len(xy) and isinstance(xy[0], (tuple, list)):
+            return [(x + self._dx, y + self._dy) for x, y in xy]
+        return [v + (self._dx if i % 2 == 0 else self._dy) for i, v in enumerate(xy)]
+
+    def __getattr__(self, name):
+        fn = getattr(self._d, name)
+
+        def call(xy, *args, **kwargs):
+            return fn(self._move(xy), *args, **kwargs)
+        return call
 
 
 def _arm_points(arm_raise: float, s: int, shoulder=(395, 480)):
@@ -186,18 +223,81 @@ def _arm_points(arm_raise: float, s: int, shoulder=(395, 480)):
     return (sx * s, sy * s), (ex * s, ey * s), (hx * s, hy * s)
 
 
-def _body_dressed(d, design, s, ol, k, arm_raise, walk, skin):
+ARM_UPPER, ARM_FORE = 120, 100
+SHOULDERS = {"dressed": ((205, 480), (395, 480)), "stick": ((300, 500), (300, 500)), "cozy": ((212, 500), (388, 500))}
+REST_LEFT = {"dressed": [(205, 480), (165, 600), (178, 690)], "stick": [(300, 500), (245, 585), (215, 680)],
+             "cozy": [(212, 500), (175, 600), (168, 670)]}
+
+
+BODY_ARM = {"stick": (150, 135)}      # le bonhomme bâton a de plus longs bras (épaules au centre du corps)
+
+
+def solve_arm(shoulder, target, lengths=(ARM_UPPER, ARM_FORE)):
+    """Cinématique inverse à deux os : coude et main pour atteindre `target` (le coude reste vers le bas)."""
+    upper, fore = lengths
+    sx, sy = shoulder
+    dx, dy = target[0] - sx, target[1] - sy
+    dist = math.hypot(dx, dy)
+    reach = upper + fore - 2
+    if dist > reach:                      # cible trop loin : le bras se tend au maximum
+        dx, dy, dist = dx * reach / dist, dy * reach / dist, reach
+    if dist < 30.0:                       # cible (presque) sur l'épaule : la main se place juste en dessous
+        dx, dy, dist = 0.0, 30.0, 30.0
+    a = (upper ** 2 - fore ** 2 + dist ** 2) / (2 * dist)
+    h = math.sqrt(max(upper ** 2 - a ** 2, 0.0))
+    ux, uy = dx / dist, dy / dist
+    px, py = sx + ux * a, sy + uy * a
+    c1, c2 = (px - uy * h, py + ux * h), (px + uy * h, py - ux * h)
+    elbow = c1 if c1[1] >= c2[1] else c2
+    return elbow, (sx + dx, sy + dy)
+
+
+def _right_arm(body, arm_raise, right_hand):
+    sh = SHOULDERS[body][1]
+    if right_hand is not None:
+        elbow, hand = solve_arm(sh, right_hand, BODY_ARM.get(body, (ARM_UPPER, ARM_FORE)))
+        return [sh, elbow, hand]
+    a, e, h = _arm_points(arm_raise, 1, sh)
+    return [a, e, h]
+
+
+def _left_arm(body, left_hand):
+    sh = SHOULDERS[body][0]
+    if left_hand is not None:
+        elbow, hand = solve_arm(sh, left_hand, BODY_ARM.get(body, (ARM_UPPER, ARM_FORE)))
+        return [sh, elbow, hand]
+    return list(REST_LEFT[body])
+
+
+def _flat(points, s):
+    return tuple(v * s for p in points for v in p)
+
+
+def _legs_feet(walk, stride):
+    """Décalage horizontal et hauteur de levée de chaque pied (gauche, droite) : jambes qui marchent."""
+    left = (walk * -34 + stride * 45, max(0.0, stride) * 28)
+    right = (walk * 34 - stride * 45, max(0.0, -stride) * 28)
+    return left, right
+
+
+def _legs_dressed(d, design, s, ol, k, walk, stride):
     line = round(12 * k) * s
-    for hip, sign in ((262, -1), (338, 1)):
-        foot_x = hip + sign * 14 + walk * sign * 34
-        d.line((hip * s, 705 * s, foot_x * s, 925 * s), fill=ol, width=line)
-        d.ellipse(((foot_x - 30) * s, 910 * s, (foot_x + 30) * s, 942 * s), fill=ol)
-    left_hand = (178 * s, 690 * s)
-    d.line((205 * s, 480 * s, 165 * s, 600 * s, left_hand[0], left_hand[1]), fill=ol, width=line, joint="curve")
-    a, e, h = _arm_points(arm_raise, s)
-    d.line((*a, *e, *h), fill=ol, width=line, joint="curve")
-    for hand in (left_hand, h):
-        d.ellipse((hand[0] - 20 * s, hand[1] - 20 * s, hand[0] + 20 * s, hand[1] + 20 * s), fill=skin, outline=ol, width=7 * s)
+    (lx, ll), (rx, rl) = _legs_feet(walk, stride)
+    for hip, sign, shift, lift in ((262, -1, lx, ll), (338, 1, rx, rl)):
+        foot_x = hip + sign * 14 + shift
+        d.line((hip * s, 705 * s, foot_x * s, (925 - lift) * s), fill=ol, width=line)
+        d.ellipse(((foot_x - 30) * s, (910 - lift) * s, (foot_x + 30) * s, (942 - lift) * s), fill=ol)
+
+
+def _arms_dressed(d, design, s, ol, k, left_pts, right_pts, skin):
+    line = round(12 * k) * s
+    for pts in (left_pts, right_pts):
+        d.line(_flat(pts, s), fill=ol, width=line, joint="curve")
+        hx, hy = pts[-1]
+        d.ellipse(((hx - 20) * s, (hy - 20) * s, (hx + 20) * s, (hy + 20) * s), fill=skin, outline=ol, width=7 * s)
+
+
+def _torso_dressed(d, design, s, ol, k):
     d.rounded_rectangle((190 * s, 430 * s, 410 * s, 720 * s), 46 * s, fill=_rgba(design.outfit), outline=ol, width=round(10 * k) * s)
     if design.belt:
         d.rectangle((192 * s, 640 * s, 408 * s, 668 * s), fill=_rgba(design.pants), outline=ol, width=6 * s)
@@ -205,47 +305,97 @@ def _body_dressed(d, design, s, ol, k, arm_raise, walk, skin):
     d.line((235 * s, 440 * s, 365 * s, 585 * s), fill=ol, width=8 * s)  # bandoulière
 
 
-def _body_stick(d, design, s, ol, k, arm_raise, walk, skin):
+def _legs_stick(d, design, s, ol, k, walk, stride):
     line = round(13 * k) * s
-    for sign in (-1, 1):  # jambes fines
-        foot_x = 300 + sign * 55 + walk * sign * 34
-        d.line((300 * s, 700 * s, (300 + sign * 40) * s, 810 * s, foot_x * s, 925 * s), fill=ol, width=line, joint="curve")
-        d.ellipse(((foot_x - 26) * s, 912 * s, (foot_x + 26) * s, 940 * s), fill=ol)
-    d.line((300 * s, 430 * s, 300 * s, 705 * s), fill=ol, width=line)  # colonne
-    d.line((300 * s, 500 * s, 245 * s, 585 * s, 215 * s, 680 * s), fill=ol, width=line, joint="curve")
-    a, e, h = _arm_points(arm_raise, s, shoulder=(300, 500))
-    d.line((*a, *e, *h), fill=ol, width=line, joint="curve")
-    for hand in ((215 * s, 680 * s), h):  # petites mains pleines, comme les bonhommes bâtons classiques
-        d.ellipse((hand[0] - 21 * s, hand[1] - 21 * s, hand[0] + 21 * s, hand[1] + 21 * s), fill=ol)
+    (lx, ll), (rx, rl) = _legs_feet(walk, stride)
+    for sign, shift, lift in ((-1, lx, ll), (1, rx, rl)):
+        foot_x = 300 + sign * 55 + shift
+        d.line((300 * s, 700 * s, (300 + sign * 40 + shift / 2) * s, (810 - lift / 2) * s, foot_x * s, (925 - lift) * s),
+               fill=ol, width=line, joint="curve")
+        d.ellipse(((foot_x - 26) * s, (912 - lift) * s, (foot_x + 26) * s, (940 - lift) * s), fill=ol)
 
 
-def _body_cozy(d, design, s, ol, k, arm_raise, walk, skin):
-    out, pants, sweater = round(9 * k) * s, _rgba(design.pants), _rgba(design.outfit)
-    for cx_, sign in ((262, -1), (338, 1)):  # jambes : pantalon rond + petite chaussure
-        foot = cx_ + sign * 8 + walk * sign * 30
-        d.rounded_rectangle(((foot - 30) * s, 650 * s, (foot + 30) * s, 905 * s), 28 * s, fill=pants, outline=ol, width=out)
-        d.ellipse(((foot - 38) * s, 888 * s, (foot + 38) * s, 940 * s), fill=_rgba("#8a6f58"), outline=ol, width=out)
-    # bras : manche (trait épais) + main
-    def sleeve(points):
-        d.line(points, fill=ol, width=round(46 * k) * s, joint="curve")
-        d.line(points, fill=sweater, width=round(46 * k) * s - 2 * out, joint="curve")
-    sleeve((212 * s, 500 * s, 175 * s, 600 * s, 168 * s, 670 * s))
-    a, e, h = _arm_points(arm_raise, s, shoulder=(388, 500))
-    sleeve((*a, *e, *h))
-    for hand in ((168 * s, 676 * s), h):
-        d.ellipse((hand[0] - 22 * s, hand[1] - 22 * s, hand[0] + 22 * s, hand[1] + 22 * s), fill=skin, outline=ol, width=out)
-    d.rounded_rectangle((195 * s, 435 * s, 405 * s, 700 * s), 78 * s, fill=sweater, outline=ol, width=out)
+def _arms_stick(d, design, s, ol, k, left_pts, right_pts, skin):
+    line = round(13 * k) * s
+    for pts in (left_pts, right_pts):
+        d.line(_flat(pts, s), fill=ol, width=line, joint="curve")
+        hx, hy = pts[-1]
+        d.ellipse(((hx - 21) * s, (hy - 21) * s, (hx + 21) * s, (hy + 21) * s), fill=ol)  # petites mains pleines
+
+
+def _torso_stick(d, design, s, ol, k):
+    d.line((300 * s, 430 * s, 300 * s, 705 * s), fill=ol, width=round(13 * k) * s)
+
+
+def _legs_cozy(d, design, s, ol, k, walk, stride):
+    out, pants = round(9 * k) * s, _rgba(design.pants)
+    (lx, ll), (rx, rl) = _legs_feet(walk, stride)
+    for cx_, sign, shift, lift in ((262, -1, lx, ll), (338, 1, rx, rl)):
+        foot = cx_ + sign * 8 + shift
+        d.rounded_rectangle(((foot - 30) * s, 650 * s, (foot + 30) * s, (905 - lift) * s), 28 * s, fill=pants, outline=ol, width=out)
+        d.ellipse(((foot - 38) * s, (888 - lift) * s, (foot + 38) * s, (940 - lift) * s), fill=_rgba("#8a6f58"), outline=ol, width=out)
+
+
+def _arms_cozy(d, design, s, ol, k, left_pts, right_pts, skin):
+    out, sweater = round(9 * k) * s, _rgba(design.outfit)
+    for pts in (left_pts, right_pts):
+        d.line(_flat(pts, s), fill=ol, width=round(46 * k) * s, joint="curve")
+        d.line(_flat(pts, s), fill=sweater, width=round(46 * k) * s - 2 * out, joint="curve")
+        hx, hy = pts[-1]
+        d.ellipse(((hx - 22) * s, (hy - 22) * s, (hx + 22) * s, (hy + 22) * s), fill=skin, outline=ol, width=out)
+
+
+def _torso_cozy(d, design, s, ol, k):
+    out = round(9 * k) * s
+    d.rounded_rectangle((195 * s, 435 * s, 405 * s, 700 * s), 78 * s, fill=_rgba(design.outfit), outline=ol, width=out)
     d.line((215 * s, 668 * s, 385 * s, 668 * s), fill=_rgba(design.pants, 90), width=5 * s)  # bord du pull
 
 
-BODY_DRAWERS = {"dressed": _body_dressed, "stick": _body_stick, "cozy": _body_cozy}
+BODY_PARTS = {  # (jambes, bras, torse)
+    "dressed": (_legs_dressed, _arms_dressed, _torso_dressed),
+    "stick": (_legs_stick, _arms_stick, _torso_stick),
+    "cozy": (_legs_cozy, _arms_cozy, _torso_cozy),
+}
 
 
-def _shade_head(img: Image.Image, skin, s: int) -> None:
+def _draw_prop(d, name: str, hand, s: int, ol, skin) -> None:
+    """Objet tenu à la main (téléphone, argent, tasse, journal, loupe), puis la main par-dessus."""
+    hx, hy = hand
+    if name == "phone":
+        d.rounded_rectangle(((hx - 30) * s, (hy - 92) * s, (hx + 30) * s, (hy + 12) * s), 9 * s, fill=(34, 38, 52, 255), outline=ol, width=5 * s)
+        d.rounded_rectangle(((hx - 23) * s, (hy - 82) * s, (hx + 23) * s, (hy - 8) * s), 5 * s, fill=(150, 205, 255, 255))
+    elif name == "money":
+        for off in (14, 0):
+            d.rectangle(((hx - 50 + off) * s, (hy - 52 + off) * s, (hx + 40 + off) * s, (hy + off) * s), fill=(120, 195, 120, 255), outline=ol, width=5 * s)
+        d.ellipse(((hx - 16) * s, (hy - 38) * s, (hx + 16) * s, (hy - 8) * s), fill=(185, 232, 185, 255), outline=ol, width=4 * s)
+    elif name == "cup":
+        d.rounded_rectangle(((hx - 26) * s, (hy - 54) * s, (hx + 26) * s, (hy + 8) * s), 8 * s, fill=(250, 250, 250, 255), outline=ol, width=5 * s)
+        d.arc(((hx + 14) * s, (hy - 42) * s, (hx + 52) * s, (hy - 4) * s), 270, 90, fill=ol, width=5 * s)
+    elif name == "newspaper":
+        d.rectangle(((hx - 58) * s, (hy - 100) * s, (hx + 58) * s, (hy + 14) * s), fill=(245, 240, 224, 255), outline=ol, width=5 * s)
+        for i in range(5):
+            d.line(((hx - 44) * s, (hy - 80 + i * 20) * s, (hx + 44) * s, (hy - 80 + i * 20) * s), fill=(150, 145, 130, 255), width=4 * s)
+    elif name == "magnifier":
+        d.ellipse(((hx - 34) * s, (hy - 100) * s, (hx + 34) * s, (hy - 32) * s), fill=(210, 235, 250, 150), outline=ol, width=7 * s)
+        d.line((hx * s, (hy - 32) * s, hx * s, (hy + 10) * s), fill=ol, width=9 * s)
+    d.ellipse(((hx - 20) * s, (hy - 20) * s, (hx + 20) * s, (hy + 20) * s), fill=skin, outline=ol, width=6 * s)
+
+
+PROPS = ("phone", "money", "cup", "newspaper", "magnifier")
+
+
+RX0, RY0, RX1, RY1 = 100, 40, 800, 560        # zone de la tête (coordonnées du calque) : seule elle est retravaillée
+
+
+def _region_shift():
+    return (OX - RX0) * SS, (OY - RY0) * SS
+
+
+def _shade_head(img: Image.Image, skin, s: int, sx: int, sy: int) -> None:
     """Ombre douce en croissant en bas à droite + reflet en haut à gauche (lumière venant du haut-gauche)."""
-    x0, y0, x1, y1 = (v * s for v in HEAD_BOX)
-    inset = 14 * s
-    box = (x0 + inset, y0 + inset, x1 - inset, y1 - inset)
+    x0, y0, x1, y1 = HEAD_BOX
+    inset = 14
+    box = ((x0 + inset) * s + sx, (y0 + inset) * s + sy, (x1 - inset) * s + sx, (y1 - inset) * s + sy)
     mask = Image.new("L", img.size, 0)
     ImageDraw.Draw(mask).ellipse(box, fill=255)
     off = Image.new("L", img.size, 0)
@@ -255,53 +405,146 @@ def _shade_head(img: Image.Image, skin, s: int) -> None:
     shade.putalpha(crescent.point(lambda v: v * 95 // 255))
     img.alpha_composite(shade)
     glow = Image.new("RGBA", img.size, (255, 255, 255, 0))  # base blanche : le flou ne crée pas de halo gris
-    ImageDraw.Draw(glow).ellipse((165 * s, 105 * s, 250 * s, 165 * s), fill=(255, 255, 255, 120))
+    ImageDraw.Draw(glow).ellipse((165 * s + sx, 105 * s + sy, 250 * s + sx, 165 * s + sy), fill=(255, 255, 255, 120))
     img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(12 * s)))
 
 
-def draw_puppet(design: PuppetDesign, emotion: str = "neutral", mouth: int = 0, blink: bool = False,
-                arm_raise: float = 0.0, walk: float = 0.0, display_height: int = 820) -> Image.Image:
-    """Dessine le personnage (RGBA, fond transparent) à la hauteur voulue.
+@lru_cache(maxsize=32)
+def _head_base(design_json: str) -> Image.Image:
+    """Partie de la tête qui ne dépend que du personnage (crâne, ombrage, joues, nez) : dessinée une seule fois."""
+    design = PuppetDesign.from_json(design_json)
+    s, k = SS, design.line_scale
+    sx, sy = _region_shift()
+    img = Image.new("RGBA", ((RX1 - RX0) * s, (RY1 - RY0) * s), (0, 0, 0, 0))
+    skin, ol = _rgba(design.skin), _rgba(design.outline)
+    hd = _Shift(ImageDraw.Draw(img), sx, sy)
+    hd.ellipse(tuple(v * s for v in HEAD_BOX), fill=skin, outline=ol, width=round(11 * k) * s)
+    if design.shading:
+        _shade_head(img, skin, s, sx, sy)
+    if design.blush:
+        cheeks = Image.new("RGBA", img.size, (240, 130, 130, 0))
+        cd = _Shift(ImageDraw.Draw(cheeks), sx, sy)
+        for cx_ in (172, 428):
+            cd.ellipse(((cx_ - 34) * s, 322 * s, (cx_ + 34) * s, 358 * s), fill=(240, 130, 130, 120))
+        img.alpha_composite(cheeks.filter(ImageFilter.GaussianBlur(5 * s)))
+    if design.body != "stick":  # petit nez (le bonhomme bâton classique n'en a pas)
+        hd = _Shift(ImageDraw.Draw(img), sx, sy)
+        hd.ellipse((276 * s, 292 * s, 324 * s, 330 * s), fill=_rgba("#e8b27f") if design.body == "dressed" else _darker(skin, 0.92) + (255,))
+    return img
 
-    mouth : 0 (fermée) à 3 (grande ouverte) ; arm_raise : 0 (bras le long du corps) à 1 (bras levé) ;
-    walk : -1 à 1, écarte les jambes (marche).
+
+def _head_region(design, emotion, mouth, blink) -> Image.Image:
+    """Tête complète (visage, moustache, lunettes, chapeau) dans la zone de la tête."""
+    s, ol, k = SS, _rgba(design.outline), design.line_scale
+    sx, sy = _region_shift()
+    head = _head_base(design.to_json()).copy()
+    fw, fh = 320 * s, 280 * s
+    face = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
+    fd = _Shift(ImageDraw.Draw(face), -140 * s, -150 * s)
+    _eyes_and_brows(fd, emotion, blink, s, ol, k)
+    _mouth(fd, emotion, mouth, s, ol, k)
+    region = face.resize((round(fw * FACE_SCALE), round(fh * FACE_SCALE)), Image.BICUBIC)
+    cx, cy = 300 * s + sx, 305 * s + sy
+    head.alpha_composite(region, (cx - region.width // 2, cy - region.height // 2))
+    hd = _Shift(ImageDraw.Draw(head), sx, sy)
+    if design.moustache:
+        mc = _rgba(design.hair)
+        hd.ellipse((248 * s, 326 * s, 304 * s, 352 * s), fill=mc, outline=ol, width=4 * s)
+        hd.ellipse((296 * s, 326 * s, 352 * s, 352 * s), fill=mc, outline=ol, width=4 * s)
+        hd.arc((232 * s, 322 * s, 272 * s, 356 * s), 100, 200, fill=ol, width=5 * s)
+        hd.arc((328 * s, 322 * s, 368 * s, 356 * s), 340, 80, fill=ol, width=5 * s)
+    if design.glasses:
+        for gx in (195, 405):
+            hd.ellipse(((gx - 50) * s, 208 * s, (gx + 50) * s, 306 * s), outline=ol, width=6 * s)
+        hd.line((245 * s, 252 * s, 355 * s, 252 * s), fill=ol, width=6 * s)
+    if design.hat != "none":
+        _hat(hd, design, s, ol)
+    return head
+
+
+def _finish(img: Image.Image, display_height: int) -> Image.Image:
+    """Zone conservée toujours identique (le personnage ne « saute » pas), mise à l'échelle voulue."""
+    img = img.crop((0, CROP_TOP * SS, CANVAS[0] * SS, CANVAS[1] * SS))
+    ratio = display_height / img.height
+    return img.resize((max(1, round(img.width * ratio)), display_height), Image.BOX)
+
+
+def draw_body_layers(design: PuppetDesign, arm_raise: float = 0.0, walk: float = 0.0, right_hand=None,
+                     left_hand=None, stride: float = 0.0, prop: str = None, front_arms: bool = False,
+                     display_height: int = 820):
+    """Corps du personnage en deux calques de même taille : (derrière, devant).
+
+    « derrière » : jambes, torse et bras (sauf si front_arms) ; « devant » : bras devant la tête et objet tenu
+    (None s'il n'y a rien à dessiner devant). La tête se dessine à part (draw_head_layer) : on peut ainsi
+    réutiliser les calques déjà dessinés et ne recalculer que ce qui change.
     """
     s = SS
     k = design.line_scale
     ol = _rgba(design.outline)
-    img = Image.new("RGBA", (CANVAS[0] * s, CANVAS[1] * s), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
     skin = _rgba(design.skin)
-    BODY_DRAWERS.get(design.body, _body_dressed)(d, design, s, ol, k, arm_raise, walk, skin)
-    d.ellipse(tuple(v * s for v in HEAD_BOX), fill=skin, outline=ol, width=round(11 * k) * s)  # tête
-    if design.shading:
-        _shade_head(img, skin, s)
-        d = ImageDraw.Draw(img)
-    if design.blush:
-        cheeks = Image.new("RGBA", img.size, (240, 130, 130, 0))
-        cd = ImageDraw.Draw(cheeks)
-        for cx_ in (172, 428):
-            cd.ellipse(((cx_ - 34) * s, 322 * s, (cx_ + 34) * s, 358 * s), fill=(240, 130, 130, 120))
-        img.alpha_composite(cheeks.filter(ImageFilter.GaussianBlur(5 * s)))
-        d = ImageDraw.Draw(img)
-    if design.body != "stick":  # petit nez (le bonhomme bâton classique n'en a pas)
-        d.ellipse((276 * s, 292 * s, 324 * s, 330 * s), fill=_rgba("#e8b27f") if design.body == "dressed" else _darker(skin, 0.92) + (255,))
-    face = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    fd = ImageDraw.Draw(face)
-    _eyes_and_brows(fd, emotion, blink, s, ol, k)
-    _mouth(fd, emotion, mouth, s, ol, k)
-    box = (140 * s, 150 * s, 460 * s, 430 * s)
-    region = face.crop(box)
-    region = region.resize((round(region.width * FACE_SCALE), round(region.height * FACE_SCALE)), Image.LANCZOS)
-    cx, cy = (box[0] + box[2]) // 2, 305 * s
-    img.alpha_composite(region, (cx - region.width // 2, cy - region.height // 2))
-    if design.hat != "none":
-        _hat(ImageDraw.Draw(img), design, s, ol)
-    bbox = img.getbbox()
-    img = img.crop(bbox) if bbox else img
-    ratio = display_height / img.height      # le personnage mesure exactement display_height de haut
-    size = (max(1, round(img.width * ratio)), display_height)
-    return img.resize(size, Image.LANCZOS)
+    body = design.body if design.body in BODY_PARTS else "dressed"
+    legs_fn, arms_fn, torso_fn = BODY_PARTS[body]
+    left_pts, right_pts = _left_arm(body, left_hand), _right_arm(body, arm_raise, right_hand)
+
+    back = Image.new("RGBA", (CANVAS[0] * s, CANVAS[1] * s), (0, 0, 0, 0))
+    d = _Shift(ImageDraw.Draw(back), OX * s, OY * s)
+    legs_fn(d, design, s, ol, k, walk, stride)
+    if not front_arms:
+        arms_fn(d, design, s, ol, k, left_pts, right_pts, skin)
+    torso_fn(d, design, s, ol, k)
+
+    front = None
+    if front_arms or prop in PROPS:
+        front = Image.new("RGBA", back.size, (0, 0, 0, 0))
+        fd = _Shift(ImageDraw.Draw(front), OX * s, OY * s)
+        if front_arms:
+            arms_fn(fd, design, s, ol, k, left_pts, right_pts, skin)
+        if prop in PROPS:
+            _draw_prop(fd, prop, right_pts[-1], s, ol, ol if body == "stick" else skin)
+    return _finish(back, display_height), (_finish(front, display_height) if front is not None else None)
+
+
+def draw_head_layer(design: PuppetDesign, emotion: str = "neutral", mouth: int = 0, blink: bool = False,
+                    head_tilt: float = 0.0, head_dy: float = 0.0, display_height: int = 820) -> Image.Image:
+    """Tête seule (même taille et même repère que les calques du corps), éventuellement inclinée ou baissée."""
+    ratio = display_height / (CANVAS[1] - CROP_TOP)          # pixels d'affichage par unité du dessin
+    head = _head_region(design, emotion, mouth, blink)
+    # on réduit d'abord (rapide, le dessin est suréchantillonné), puis on incline la petite image
+    region = head.resize((round((RX1 - RX0) * ratio), round((RY1 - RY0) * ratio)), Image.BOX)
+    if head_tilt:
+        region = region.rotate(-head_tilt, resample=Image.BICUBIC,
+                               center=((300 + OX - RX0) * ratio, (445 + OY - RY0) * ratio))
+    if head_dy:
+        region = region.transform(region.size, Image.AFFINE, (1, 0, 0, 0, 1, -head_dy * ratio), resample=Image.BICUBIC)
+    layer = Image.new("RGBA", (round(CANVAS[0] * ratio), display_height), (0, 0, 0, 0))
+    layer.alpha_composite(region, (round(RX0 * ratio), round((RY0 - CROP_TOP) * ratio)))
+    return layer
+
+
+def compose_puppet(back: Image.Image, head: Image.Image, front: Image.Image = None) -> Image.Image:
+    img = back.copy()
+    img.alpha_composite(head)
+    if front is not None:
+        img.alpha_composite(front)
+    return img
+
+
+def draw_puppet(design: PuppetDesign, emotion: str = "neutral", mouth: int = 0, blink: bool = False,
+                arm_raise: float = 0.0, walk: float = 0.0, display_height: int = 820,
+                right_hand=None, left_hand=None, head_tilt: float = 0.0, head_dy: float = 0.0,
+                stride: float = 0.0, prop: str = None, front_arms: bool = False) -> Image.Image:
+    """Dessine le personnage complet (RGBA, fond transparent). La taille de l'image est toujours la même.
+
+    mouth : 0 (fermée) à 3 (grande ouverte) ; arm_raise : 0 (bras pendant) à 1 (bras levé) ;
+    right_hand / left_hand : position cible (x, y) de la main, en coordonnées du dessin 600x1000
+    (cinématique inverse : le coude suit) ; head_tilt : inclinaison de la tête en degrés (+ = vers la droite) ;
+    head_dy : la tête descend de n pixels (acquiescer) ; walk / stride : marche ; prop : objet tenu à la main
+    droite ; front_arms : bras dessinés devant la tête (main devant le visage...).
+    """
+    back, front = draw_body_layers(design, arm_raise, walk, right_hand, left_hand, stride, prop, front_arms,
+                                   display_height)
+    head = draw_head_layer(design, emotion, mouth, blink, head_tilt, head_dy, display_height)
+    return compose_puppet(back, head, front)
 
 
 _COLOR_NAMES = {
@@ -325,9 +568,12 @@ def describe_design(design: PuppetDesign) -> str:
         "none": "no hat", "cap": f"a {color_name(design.hat_color)} cap",
         "beanie": f"a {color_name(design.hat_color)} beanie", "helmet": f"a {color_name(design.hat_color)} helmet",
         "hair": f"{color_name(design.hair)} spiky hair",
+        "bowler": f"a {color_name(design.hat_color)} bowler hat", "tophat": f"a {color_name(design.hat_color)} top hat",
+        "miner": f"a {color_name(design.hat_color)} miner helmet with a lamp",
     }
+    extras = (", a big mustache" if design.moustache else "") + (", round glasses" if design.glasses else "")
     head = (f"a cute cartoon stickman character with a big perfectly round {color_name(design.skin)} head and "
-            f"thick {color_name(design.outline)} outlines, {hats.get(design.hat, 'no hat')}")
+            f"thick {color_name(design.outline)} outlines, {hats.get(design.hat, 'no hat')}{extras}")
     if design.body == "stick":
         return head + ", thin stick-figure body with simple line arms and legs, no clothes, simple dot eyes"
     if design.body == "cozy":

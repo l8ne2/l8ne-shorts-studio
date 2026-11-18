@@ -15,6 +15,7 @@ Aucune vidéo n'est publiée automatiquement : tu vérifies les faits, les droit
 - [x] Phase 3 — Montage FFmpeg, prévisualisation, export MP4
 - [x] Styles animés : dessin animé 2D, personnage 3D coloré, explication 3D en coupe (images IA via Cloudflare Workers AI) et studio de personnages
 - [x] Mode dialogue : deux personnages, deux voix, seul celui qui parle ouvre la bouche
+- [x] Jeu d'acteur : gestes des deux bras, hochements de tête, entrées en marchant, objets tenus, réactions (calme, naturel, expressif, comique)
 - [ ] Tests sur les trois chaînes et version 1.0
 
 ## Installation (Windows)

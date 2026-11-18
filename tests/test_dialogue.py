@@ -157,9 +157,9 @@ from core.animator import SceneSpec, render_scene
 @needs_ffmpeg
 def test_seul_celui_qui_parle_ouvre_la_bouche(tmp_path, monkeypatch):
     calls = []
-    real = animator.draw_puppet
-    monkeypatch.setattr(animator, "draw_puppet", lambda design, emotion, **kw: (calls.append((design.skin, kw.get("mouth", 0))),
-                                                                              real(design, emotion, **kw))[1])
+    real = animator.draw_head_layer
+    monkeypatch.setattr(animator, "draw_head_layer", lambda design, emotion, mouth=0, *a, **kw: (calls.append((design.skin, mouth)),
+                                                                                              real(design, emotion, mouth, *a, **kw))[1])
     bg = tmp_path / "bg.jpg"
     Image.new("RGB", (1080, 1920), (90, 170, 230)).save(bg)
     chars = [{"design": {"skin": "#aaaaaa"}, "emotion": "happy"}, {"design": {"skin": "#bbbbbb"}, "emotion": "sad"}]

@@ -61,7 +61,7 @@ if style["composition"] == "puppet":
         d = PRESETS[name][1]
         values = {"body": d.body, "skin": d.skin, "outfit": d.outfit, "pants": d.pants, "hatc": d.hat_color,
                   "hair": d.hair, "hat": d.hat, "belt": d.belt, "outline": d.outline, "lines": d.line_scale,
-                  "shade": d.shading, "blush": d.blush}
+                  "shade": d.shading, "blush": d.blush, "mous": d.moustache, "glass": d.glasses}
         for key, value in values.items():
             st.session_state[key + k] = value
 
@@ -74,7 +74,7 @@ if style["composition"] == "puppet":
     for key, value in {"body": design.body, "skin": design.skin, "outfit": design.outfit, "pants": design.pants,
                        "hatc": design.hat_color, "hair": design.hair, "outline": design.outline, "hat": design.hat,
                        "belt": design.belt, "shade": design.shading, "blush": design.blush,
-                       "lines": float(design.line_scale)}.items():
+                       "lines": float(design.line_scale), "mous": design.moustache, "glass": design.glasses}.items():
         st.session_state.setdefault(key + k, value)
     body = st.selectbox("Corps", BODIES, format_func=lambda b: BODY_LABELS[b], key="body" + k)
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -86,14 +86,19 @@ if style["composition"] == "puppet":
     outline = c6.color_picker("Contour", key="outline" + k)
     h1, h2, h3, h4, h5 = st.columns(5)
     hat = h1.selectbox("Coiffure / chapeau", HATS,
-                       format_func=lambda x: {"none": "Aucun", "cap": "Casquette", "beanie": "Bonnet",
-                                              "helmet": "Casque", "hair": "Cheveux"}[x], key="hat" + k)
+                       format_func=lambda x: {"none": "Aucun", "cap": "Casquette", "beanie": "Bonnet", "helmet": "Casque",
+                                              "hair": "Cheveux", "bowler": "Chapeau melon", "tophat": "Haut-de-forme",
+                                              "miner": "Casque de mineur"}.get(x, x), key="hat" + k)
     belt = h2.checkbox("Ceinture (habillé)", key="belt" + k)
     shading = h3.checkbox("Ombrage doux", key="shade" + k)
     blush = h4.checkbox("Joues roses", key="blush" + k)
     lines = h5.slider("Épaisseur du trait", 0.6, 1.8, step=0.05, key="lines" + k)
+    a1, a2, _ = st.columns(3)
+    moustache = a1.checkbox("Moustache", key="mous" + k)
+    glasses = a2.checkbox("Lunettes rondes", key="glass" + k)
     new_design = PuppetDesign(skin=skin, outfit=outfit, pants=pants, hat=hat, hat_color=hat_color, hair=hair,
-                              belt=belt, body=body, outline=outline, line_scale=lines, shading=shading, blush=blush)
+                              belt=belt, body=body, outline=outline, line_scale=lines, shading=shading, blush=blush,
+                              moustache=moustache, glasses=glasses)
     st.caption("Aperçu des expressions (la bouche s'ouvrira au rythme de la voix dans la vidéo) :")
     shots = [(draw_puppet(new_design, e, display_height=260), EMOTION_LABELS[e]) for e in PUPPET_EMOTIONS]
     shots.append((draw_puppet(new_design, "happy", mouth=2, arm_raise=1.0, display_height=260), "Parle"))

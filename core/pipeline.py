@@ -77,13 +77,16 @@ def _prepare_clips(plan: list, durations: list, audio, out: Path, ffmpeg: str = 
             if not timeline:
                 raise dialogue.DialogueError("Répliques introuvables : régénère la voix du dialogue.")
             spec = SceneSpec(background=entry["file"], duration=dur, start_time=start, index=i,
-                             characters=anim["characters"], timeline=timeline)
+                             characters=anim["characters"], timeline=timeline,
+                             intensity=entry.get("acting") or "normal")
         elif anim:
             spec = SceneSpec(background=entry["file"], duration=dur, start_time=start, index=i,
                              emotion=entry.get("emotion", "neutral"), kind=anim["type"],
-                             design=anim.get("design") or {}, sprite=entry.get("sprite"))
+                             design=anim.get("design") or {}, sprite=entry.get("sprite"),
+                             intensity=entry.get("acting") or "normal", prop=entry.get("prop"))
         if anim:
-            clips.append(str(render_scene(spec, mouths, gestures, anim_dir / f"scene_{i + 1}.mp4", ffmpeg)))
+            clips.append(str(render_scene(spec, mouths, gestures, anim_dir / f"scene_{i + 1}.mp4", ffmpeg,
+                                          envelope=envelope)))
         else:
             clips.append(entry["file"])
         start += dur

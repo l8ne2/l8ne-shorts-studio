@@ -50,9 +50,9 @@ def generate_scene_image(project_id: int, index: int, visual: str, style_key: st
 
 
 def build_entry(index: int, text: str, plan: dict, image_path, sprite_path, attempt: int = 0,
-                animation: dict = None, segments: list = None) -> dict:
+                animation: dict = None, segments: list = None, acting: str = None, prop: str = None) -> dict:
     return {
-        "segments": segments,
+        "segments": segments, "acting": acting, "prop": prop,
         "scene": index + 1, "text": text, "kind": "image", "file": str(image_path),
         "sprite": str(sprite_path) if sprite_path else None,
         "visual": plan["visual"], "emotion": plan["emotion"], "label": plan.get("label", ""),
